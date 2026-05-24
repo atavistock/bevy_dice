@@ -1,0 +1,41 @@
+[package]
+name = "bevy_dice"
+version = "0.2.0"
+edition = "2024"
+
+[features]
+# Each feature embeds the indicated diceset gltf into the binary so callers
+# can use it with no asset setup. The textured dicesets (frosty ~95 MB,
+# fiery ~76 MB) are deliberately not feature-gated; ship those by writing
+# them into your own `assets/` directory.
+plain_white = []
+halloween = []
+metal = []
+clear_orange = []
+
+[dependencies]
+avian3d = "0.6.1"
+bevy = "0.18"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+bevy_material_ui = "0.2.7"
+
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
+[[example]]
+name = "tester"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"

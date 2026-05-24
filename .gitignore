@@ -1,0 +1,6 @@
+# Rust or wasm builds
+/target
+/dist
+
+# MacOS turds
+.DS_Store
