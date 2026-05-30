@@ -1,23 +1,38 @@
+use std::fmt;
+
+use bevy::reflect::Reflect;
 use rand::Rng;
 
 use crate::dice::kind::DieKind;
 use crate::dice::options::Options;
 
-/// One `NdK` chunk inside a [`DiceRoll`]. `negate` flips its sign in the
-/// total; `options` carries per-term modifiers (keep, reroll, explode).
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// One `NdK` chunk of a [`DiceRoll`] with optional sign and modifiers.
+#[derive(Clone, Debug, Eq, PartialEq, Reflect)]
 pub struct DiceTerm {
+    /// `N` in `NdK`. The parser rejects `0`; `count == 0` produces an empty roll.
     pub count: u32,
+    /// `K` in `NdK`.
     pub kind: DieKind,
+    /// Subtract this term's total from the roll.
     pub negate: bool,
+    /// Per-term modifiers (keep, reroll, explode).
     pub options: Options,
 }
 
-/// A parsed dice expression: zero or more [`DiceTerm`]s plus a flat
-/// `adjustment` summed into the total. Build with [`DiceRoll::parse`].
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Renders as `"+3d6"` / `"-1d4"`; the leading sign is always present.
+impl fmt::Display for DiceTerm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let sign = if self.negate { '-' } else { '+' };
+        write!(f, "{sign}{}d{}", self.count, self.kind.sides())
+    }
+}
+
+/// Parsed dice expression: terms plus a flat adjustment. Build via [`DiceRoll::parse`].
+#[derive(Clone, Debug, Eq, PartialEq, Reflect)]
 pub struct DiceRoll {
+    /// Terms in source order.
     pub terms: Vec<DiceTerm>,
+    /// Flat integer added to the total.
     pub adjustment: i32,
 }
 
@@ -27,27 +42,86 @@ impl From<&DiceRoll> for DiceRoll {
     }
 }
 
-/// One die's contribution to a [`RollOutcome`]. `negate` is copied from the
-/// originating term so callers can render `-` prefixes when displaying.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// One die's contribution to a [`RollOutcome`].
+#[derive(Clone, Debug, Eq, PartialEq, Reflect)]
 pub struct RolledDie {
+    /// Die that produced this value.
     pub kind: DieKind,
+    /// Face value in `1..=kind.sides()`.
     pub value: u32,
+    /// Copied from the source term; true means the value subtracts from the total.
     pub negate: bool,
 }
 
-/// Result of [`DiceRoll::roll_detailed`]. `total` already includes the
-/// expression's adjustment and per-term negation; `dice` lists the
-/// individual values in term order.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Result of [`DiceRoll::roll_detailed`]: final `total`, per-die values in
+/// term order, and how many of those came from each term (after keep trims).
+#[derive(Clone, Debug, Eq, PartialEq, Reflect)]
 pub struct RollOutcome {
+    /// Sum of all dice with adjustment and negation applied.
     pub total: i32,
+    /// Each rolled die in term order.
     pub dice: Vec<RolledDie>,
+    /// Count of dice in `dice` contributed by each term.
+    pub term_lengths: Vec<u32>,
+}
+
+impl RollOutcome {
+    /// Dice contributed by `terms[term_index]`; empty slice if out of range.
+    pub fn term_dice(&self, term_index: usize) -> &[RolledDie] {
+        let start: usize = self.term_lengths.iter().take(term_index).map(|&n| n as usize).sum();
+        let len = self.term_lengths.get(term_index).copied().unwrap_or(0) as usize;
+        let end = (start + len).min(self.dice.len());
+        &self.dice[start..end]
+    }
+
+    /// Human-readable breakdown like `"3d6(4,2,1)+2 = 9"`. Pair with the
+    /// originating [`DiceRoll`] so term signs and adjustments render.
+    pub fn display<'a>(&'a self, roll: &'a DiceRoll) -> RollOutcomeDisplay<'a> {
+        RollOutcomeDisplay { roll, outcome: self }
+    }
+}
+
+/// `Display` adapter returned by [`RollOutcome::display`].
+pub struct RollOutcomeDisplay<'a> {
+    roll: &'a DiceRoll,
+    outcome: &'a RollOutcome,
+}
+
+impl<'a> fmt::Display for RollOutcomeDisplay<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for (term_index, term) in self.roll.terms.iter().enumerate() {
+            let values: Vec<String> = self
+                .outcome
+                .term_dice(term_index)
+                .iter()
+                .map(|d| d.value.to_string())
+                .collect();
+            if first {
+                if term.negate {
+                    write!(f, "-")?;
+                }
+                first = false;
+            } else {
+                write!(f, "{}", if term.negate { " - " } else { " + " })?;
+            }
+            write!(f, "{}d{}({})", term.count, term.kind.sides(), values.join(","))?;
+        }
+        if self.roll.adjustment != 0 {
+            if first {
+                write!(f, "{}", self.roll.adjustment)?;
+            } else if self.roll.adjustment > 0 {
+                write!(f, " + {}", self.roll.adjustment)?;
+            } else {
+                write!(f, " - {}", -self.roll.adjustment)?;
+            }
+        }
+        write!(f, " = {}", self.outcome.total)
+    }
 }
 
 impl DiceRoll {
-    /// Applies `options` to every term. Useful for single-term rolls; for
-    /// mixed-kind rolls, mutate `terms[i].options` directly instead.
+    /// Sets `options` on every term; for mixed rolls, mutate `terms[i].options` instead.
     pub fn with_options(mut self, options: Options) -> Self {
         for term in &mut self.terms {
             term.options = options.clone();
@@ -55,8 +129,7 @@ impl DiceRoll {
         self
     }
 
-    /// Causes any die showing its max value to spawn an additional die,
-    /// recursively. Applied to every term in the roll.
+    /// Every term explodes on its max face (one extra die, recursively).
     pub fn with_explode(mut self) -> Self {
         for term in &mut self.terms {
             term.options.explode_at_or_above = Some(term.kind.sides());
@@ -64,8 +137,7 @@ impl DiceRoll {
         self
     }
 
-    /// Re-rolls any die showing 1 until it shows a higher value or the
-    /// iteration cap fires. Applied to every term in the roll.
+    /// Every term re-rolls 1s until they clear (capped by [`Options::apply`]).
     pub fn with_reroll_ones(mut self) -> Self {
         for term in &mut self.terms {
             term.options.reroll_at_or_below = Some(1);
@@ -73,25 +145,53 @@ impl DiceRoll {
         self
     }
 
+    /// `2d20` keep-highest plus `modifier`. Standard 5e advantage roll.
+    pub fn with_advantage(modifier: i32) -> Self {
+        DiceRoll {
+            terms: vec![DiceTerm {
+                count: 2,
+                kind: DieKind::D20,
+                negate: false,
+                options: Options::default().with_keep_highest(1),
+            }],
+            adjustment: modifier,
+        }
+    }
+
+    /// `2d20` keep-lowest plus `modifier`. Standard 5e disadvantage roll.
+    pub fn with_disadvantage(modifier: i32) -> Self {
+        DiceRoll {
+            terms: vec![DiceTerm {
+                count: 2,
+                kind: DieKind::D20,
+                negate: false,
+                options: Options::default().with_keep_lowest(1),
+            }],
+            adjustment: modifier,
+        }
+    }
+
+    /// Rolls and returns the final total; see [`roll_detailed`](Self::roll_detailed) for per-die values.
     pub fn roll<R: Rng + ?Sized>(&self, rng: &mut R) -> i32 {
         self.roll_detailed(rng).total
     }
 
-    /// Same as `roll` but also returns each rolled die's kind, value, and sign
-    /// contribution. Useful when callers need to display the individual results.
+    /// Like [`roll`](Self::roll) but also returns each die's kind, value, and sign.
     pub fn roll_detailed<R: Rng + ?Sized>(&self, rng: &mut R) -> RollOutcome {
         let mut dice = Vec::new();
+        let mut term_lengths = Vec::with_capacity(self.terms.len());
         let mut total: i32 = self.adjustment;
         for term in &self.terms {
             let mut rolls: Vec<u32> = (0..term.count).map(|_| term.kind.roll(rng)).collect();
             term.options.apply(term.kind, &mut rolls, rng);
             let term_total: i32 = rolls.iter().map(|&r| r as i32).sum();
             total += if term.negate { -term_total } else { term_total };
+            term_lengths.push(rolls.len() as u32);
             for value in rolls {
                 dice.push(RolledDie { kind: term.kind, value, negate: term.negate });
             }
         }
-        RollOutcome { total, dice }
+        RollOutcome { total, dice, term_lengths }
     }
 }
 
@@ -126,6 +226,34 @@ mod tests {
     }
 
     #[test]
+    fn term_dice_slices_by_term() {
+        let roll = DiceRoll::parse("2d6+3d4").unwrap();
+        let outcome = roll.roll_detailed(&mut rng());
+        assert_eq!(outcome.term_lengths, vec![2, 3]);
+        assert_eq!(outcome.term_dice(0).len(), 2);
+        assert_eq!(outcome.term_dice(1).len(), 3);
+        assert!(outcome.term_dice(0).iter().all(|d| d.kind == DieKind::D6));
+        assert!(outcome.term_dice(1).iter().all(|d| d.kind == DieKind::D4));
+    }
+
+    #[test]
+    fn term_dice_reflects_keep_modifier() {
+        let roll = DiceRoll::parse("4d6").unwrap()
+            .with_options(Options::default().with_keep_highest(2));
+        let outcome = roll.roll_detailed(&mut rng());
+        assert_eq!(outcome.term_lengths, vec![2]);
+        assert_eq!(outcome.term_dice(0).len(), 2);
+        assert_eq!(outcome.dice.len(), 2);
+    }
+
+    #[test]
+    fn term_dice_out_of_range_returns_empty() {
+        let roll = DiceRoll::parse("1d6").unwrap();
+        let outcome = roll.roll_detailed(&mut rng());
+        assert!(outcome.term_dice(5).is_empty());
+    }
+
+    #[test]
     fn roll_detailed_returns_one_entry_per_rolled_die() {
         let roll = DiceRoll::parse("3d6").unwrap();
         let outcome = roll.roll_detailed(&mut rng());
@@ -144,11 +272,59 @@ mod tests {
     }
 
     #[test]
+    fn display_positive_term() {
+        let term = DiceTerm { count: 3, kind: DieKind::D6, negate: false, options: Options::default() };
+        assert_eq!(term.to_string(), "+3d6");
+    }
+
+    #[test]
+    fn display_negative_term() {
+        let term = DiceTerm { count: 1, kind: DieKind::D4, negate: true, options: Options::default() };
+        assert_eq!(term.to_string(), "-1d4");
+    }
+
+    #[test]
+    fn display_uses_parsed_term() {
+        let roll = DiceRoll::parse("2d20-1d100").unwrap();
+        assert_eq!(roll.terms[0].to_string(), "+2d20");
+        assert_eq!(roll.terms[1].to_string(), "-1d100");
+    }
+
+    #[test]
     fn with_options_applies_to_all_terms() {
         let roll = DiceRoll::parse("2d6+1d4")
             .unwrap()
             .with_options(Options::default().with_keep_highest(1));
         assert_eq!(roll.terms[0].options.keep_highest, Some(1));
         assert_eq!(roll.terms[1].options.keep_highest, Some(1));
+    }
+
+    #[test]
+    fn display_renders_simple_roll() {
+        let roll = DiceRoll::parse("3d6+2").unwrap();
+        let outcome = RollOutcome {
+            total: 9,
+            dice: vec![
+                RolledDie { kind: DieKind::D6, value: 4, negate: false },
+                RolledDie { kind: DieKind::D6, value: 2, negate: false },
+                RolledDie { kind: DieKind::D6, value: 1, negate: false },
+            ],
+            term_lengths: vec![3],
+        };
+        assert_eq!(outcome.display(&roll).to_string(), "3d6(4,2,1) + 2 = 9");
+    }
+
+    #[test]
+    fn display_renders_negated_compound() {
+        let roll = DiceRoll::parse("1d20-1d4").unwrap();
+        let outcome = RollOutcome {
+            total: 10,
+            dice: vec![
+                RolledDie { kind: DieKind::D20, value: 12, negate: false },
+                RolledDie { kind: DieKind::D4, value: 2, negate: true },
+            ],
+            term_lengths: vec![1, 1],
+        };
+        assert_eq!(outcome.display(&roll).to_string(), "1d20(12) - 1d4(2) = 10");
     }
 }

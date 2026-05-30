@@ -1,11 +1,11 @@
 use std::fmt;
 
+use bevy::reflect::Reflect;
 use rand::Rng;
 
-/// One of the standard polyhedral dice. d100 is the percentile die; the
-/// visual layer renders it as a d100 tens + d10 ones pair, but its `roll`
-/// returns one number in 1..=100.
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
+/// Standard polyhedral die. d100 rolls 1..=100; the visual layer renders
+/// it as a d100 + d10 pair.
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, Reflect)]
 pub enum DieKind {
     D4,
     D6,
@@ -17,8 +17,7 @@ pub enum DieKind {
 }
 
 impl DieKind {
-    /// All supported kinds in canonical order; the index matches the gltf
-    /// primitive order written by the asset generator.
+    /// All kinds in canonical order; index matches the gltf primitive order.
     pub const ALL: [DieKind; 7] = [
         DieKind::D4,
         DieKind::D6,
@@ -29,6 +28,7 @@ impl DieKind {
         DieKind::D100,
     ];
 
+    /// Number of faces on the die.
     pub fn sides(self) -> u32 {
         match self {
             DieKind::D4 => 4,
@@ -41,16 +41,30 @@ impl DieKind {
         }
     }
 
+    /// Looks up a kind by face count. Returns `None` for non-standard counts.
     pub fn from_sides(sides: u32) -> Option<DieKind> {
         DieKind::ALL.iter().copied().find(|k| k.sides() == sides)
     }
 
+    /// Looks up a kind by gltf asset name (`"d4"`, `"d6"`, ...).
     pub fn from_asset_name(name: &str) -> Option<DieKind> {
         DieKind::ALL.iter().copied().find(|k| k.asset_name() == name)
     }
 
-    /// gltf basename emitted by the asset generator. Pairs with
-    /// `assets/{diceset}/{asset_name}.gltf`.
+    /// Index into [`DieKind::ALL`] / the diceset gltf's primitive order.
+    pub fn mesh_index(self) -> usize {
+        match self {
+            DieKind::D4 => 0,
+            DieKind::D6 => 1,
+            DieKind::D8 => 2,
+            DieKind::D10 => 3,
+            DieKind::D12 => 4,
+            DieKind::D20 => 5,
+            DieKind::D100 => 6,
+        }
+    }
+
+    /// gltf basename, paired with `assets/{diceset}/{asset_name}.gltf`.
     pub fn asset_name(self) -> &'static str {
         match self {
             DieKind::D4 => "d4",
@@ -63,14 +77,12 @@ impl DieKind {
         }
     }
 
-    /// Uniform roll in 1..=sides(). D100 returns the full 1-100 percentile;
-    /// the runtime renders it as a d100+d10 pair but the math is one number.
+    /// Uniform roll in `1..=sides()`. D100 returns 1..=100 as one number.
     pub fn roll<R: Rng + ?Sized>(self, rng: &mut R) -> u32 {
         rng.gen_range(1..=self.sides())
     }
 
-    /// Sphere-proxy radius sized to each polyhedron's visual extent. Scaled
-    /// globally by `DicePhysicsConfig::radius_scale`.
+    /// Sphere-proxy radius for collision, sized to the polyhedron's visual extent.
     pub fn collision_radius(self) -> f32 {
         match self {
             DieKind::D4 => 0.55,
@@ -128,6 +140,13 @@ mod tests {
     fn display_matches_asset_name() {
         for kind in DieKind::ALL {
             assert_eq!(format!("{kind}"), kind.asset_name());
+        }
+    }
+
+    #[test]
+    fn mesh_index_matches_all_order() {
+        for (expected, kind) in DieKind::ALL.iter().enumerate() {
+            assert_eq!(kind.mesh_index(), expected);
         }
     }
 }

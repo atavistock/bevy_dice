@@ -3,19 +3,24 @@
 use std::f32::consts::TAU;
 
 use avian3d::prelude::*;
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use rand::Rng;
 
 use crate::dice::DieKind;
 
 use super::arena::DiceArena;
+use super::diceset::GltfAssetHandles;
 
-/// Hard cap on dice entities spawned per roll. A d100 uses two entities, so
-/// the cap on logical percentile rolls is half this value.
+/// Hard cap on dice entities spawned per roll. Excess dice from a too-large
+/// expression are silently dropped (with a `warn!`); the resulting
+/// `RollComplete` will have fewer dice than the parsed expression asked for.
+/// A d100 uses two entities, so the percentile-roll cap is half this value.
 pub const MAX_DICE_PER_ROLL: usize = 40;
 
-/// Marker for any die spawned by the plugin, plus the arena that owns it.
-#[derive(Component)]
+/// Marker for any die spawned by the plugin, plus its owning arena.
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct SpawnedDie {
     pub kind: DieKind,
     pub arena: Entity,
@@ -88,29 +93,23 @@ pub(super) fn member_state<R: Rng + ?Sized>(
 
 pub(super) fn spawn_die(
     commands: &mut Commands,
-    asset_server: &AssetServer,
+    handles: &GltfAssetHandles,
     kind: DieKind,
     arena_entity: Entity,
     arena: &DiceArena,
     state: &SpawnState,
+    render_layer: u8,
 ) -> Entity {
-    let mesh_index = DieKind::ALL.iter().position(|&k| k == kind).expect("known kind");
-    let mesh: Handle<Mesh> = asset_server.load(
-        GltfAssetLabel::Primitive { mesh: mesh_index, primitive: 0 }
-            .from_asset(arena.diceset.clone()),
-    );
-    let material: Handle<StandardMaterial> = asset_server.load(
-        GltfAssetLabel::Material { index: mesh_index, is_scale_inverted: false }
-            .from_asset(arena.diceset.clone()),
-    );
+    let idx = kind.mesh_index();
     let transform = Transform::from_translation(state.position).with_rotation(state.rotation);
     let params = &arena.physics;
     commands
         .spawn((
             SpawnedDie { kind, arena: arena_entity },
-            Mesh3d(mesh),
-            MeshMaterial3d(material),
+            Mesh3d(handles.mesh(idx)),
+            MeshMaterial3d(handles.material(idx)),
             transform,
+            RenderLayers::layer(render_layer as usize),
             RigidBody::Dynamic,
             ColliderConstructor::ConvexHullFromMesh,
             SweptCcd::default(),

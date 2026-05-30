@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use bevy::log::warn;
 use bevy::math::{Quat, Vec3};
 
 use crate::dice::DieKind;
@@ -37,19 +38,21 @@ impl DiceOrientations {
 pub fn load_orientations(path: impl AsRef<Path>) -> DiceOrientations {
     let path = path.as_ref();
     let Ok(bytes) = std::fs::read(path) else {
-        eprintln!(
-            "warning: could not read {}; dice will roll without face mapping",
-            path.display()
-        );
+        warn!("could not read {}; dice will roll without face mapping", path.display());
         return DiceOrientations::default();
     };
     load_orientations_from_bytes(&bytes)
 }
 
-/// Load orientations from in-memory gltf bytes.
+/// Load orientations from in-memory gltf bytes. Accepts either a `.gltf`
+/// text JSON or a `.glb` binary container.
 pub fn load_orientations_from_bytes(bytes: &[u8]) -> DiceOrientations {
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        eprintln!("warning: could not parse gltf bytes");
+    let json_bytes = match extract_gltf_json(bytes) {
+        Some(slice) => slice,
+        None => bytes,
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(json_bytes) else {
+        warn!("could not parse gltf bytes");
         return DiceOrientations::default();
     };
     let Some(table) = json
@@ -79,4 +82,73 @@ pub fn load_orientations_from_bytes(bytes: &[u8]) -> DiceOrientations {
         }
     }
     DiceOrientations { by_kind }
+}
+
+fn extract_gltf_json(bytes: &[u8]) -> Option<&[u8]> {
+    if bytes.len() < 20 || &bytes[0..4] != b"glTF" {
+        return None;
+    }
+    let chunk_length = u32::from_le_bytes(bytes[12..16].try_into().ok()?) as usize;
+    let chunk_type = u32::from_le_bytes(bytes[16..20].try_into().ok()?);
+    if chunk_type != 0x4E4F_534A {
+        return None;
+    }
+    let start = 20usize;
+    let end = start.checked_add(chunk_length)?;
+    bytes.get(start..end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GLTF_JSON: &str = r#"{
+        "extras": {
+            "dice_orientations": {
+                "d6": { "1": [0.0, 1.0, 0.0], "6": [0.0, -1.0, 0.0] },
+                "d20": { "20": [0.0, 1.0, 0.0] }
+            }
+        }
+    }"#;
+
+    #[test]
+    fn parses_raw_gltf_json() {
+        let orientations = load_orientations_from_bytes(GLTF_JSON.as_bytes());
+        assert_eq!(orientations.faces(DieKind::D6).len(), 2);
+        assert_eq!(orientations.faces(DieKind::D20).len(), 1);
+    }
+
+    #[test]
+    fn directions_are_normalized() {
+        let json = r#"{"extras":{"dice_orientations":{"d6":{"1":[0.0,5.0,0.0]}}}}"#;
+        let orientations = load_orientations_from_bytes(json.as_bytes());
+        let (_, direction) = &orientations.faces(DieKind::D6)[0];
+        assert!((direction.length() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn unknown_die_names_are_skipped() {
+        let json = r#"{"extras":{"dice_orientations":{"d99":{"1":[0.0,1.0,0.0]}}}}"#;
+        let orientations = load_orientations_from_bytes(json.as_bytes());
+        assert!(orientations.faces(DieKind::D6).is_empty());
+    }
+
+    #[test]
+    fn missing_extras_returns_empty() {
+        let orientations = load_orientations_from_bytes(b"{}");
+        assert!(orientations.faces(DieKind::D6).is_empty());
+    }
+
+    #[test]
+    fn up_face_picks_label_pointing_to_world_y() {
+        let orientations = load_orientations_from_bytes(GLTF_JSON.as_bytes());
+        let identity = Quat::IDENTITY;
+        assert_eq!(orientations.up_face(DieKind::D6, identity), Some("1"));
+    }
+
+    #[test]
+    fn invalid_bytes_return_empty() {
+        let orientations = load_orientations_from_bytes(b"not json or glb");
+        assert!(orientations.faces(DieKind::D6).is_empty());
+    }
 }

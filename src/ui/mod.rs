@@ -1,19 +1,25 @@
-//! Physics-driven dice presentation. Each playing area is a [`DiceArena`]
-//! entity; dice spawned via [`RollRequest`] or the [`DiceRoller`] system
-//! param tumble inside that arena and report rolled values once they settle.
-//! Math-only roll calculations stay in `src/dice/` and remain available via
-//! `DiceRoll::roll` / `DiceRoll::roll_detailed`.
+//! Physics-driven dice presentation. Dice tumble inside a [`DiceArena`]
+//! (which references a [`Diceset`] entity for its visuals) and report
+//! results via [`RollComplete`] once they settle.
+//!
+//! Render layer is `0` by default. Override per arena with
+//! [`DiceArena::render_layer`], or globally with [`DicePlugin::render_layer`];
+//! either way, the camera must include the chosen layer.
 
 mod arena;
+mod diceset;
 mod orientations;
 mod pending;
 mod plugin;
 mod resolve;
+mod rng;
 mod roller;
 mod spawn;
 
 pub use arena::{DefaultArena, DiceArena, DiceBoxWall, DicePhysicsConfig, SpawnConfig};
+pub use diceset::Diceset;
 pub use orientations::{load_orientations, load_orientations_from_bytes, DiceOrientations};
 pub use plugin::DicePlugin;
-pub use roller::{DiceRoller, NoDefaultArena, RollComplete, RollRequest};
+pub use rng::DiceRng;
+pub use roller::{DiceRoller, NoDefaultArena, RollComplete, RollError, RollRequest};
 pub use spawn::{SpawnedDie, MAX_DICE_PER_ROLL};

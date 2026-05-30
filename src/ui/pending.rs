@@ -1,29 +1,24 @@
-//! In-flight roll bookkeeping and asset handle cache.
+//! In-flight roll bookkeeping.
 
 use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::dice::{DiceRoll, DieKind};
+use crate::dice::{DiceRoll, DieKind, MAX_OPTION_ITERATIONS};
 
 use super::arena::DiceArena;
+use super::diceset::{Diceset, GltfAssetHandles};
+use super::plugin::DiceRenderLayer;
+use super::rng::DiceRng;
 use super::roller::RollRequest;
 use super::spawn::{member_state, spawn_die, throw_base, MAX_DICE_PER_ROLL};
-
-pub(super) struct GltfAssetHandles {
-    meshes: Vec<Handle<Mesh>>,
-    materials: Vec<Handle<StandardMaterial>>,
-}
-
-#[derive(Resource, Default)]
-pub(super) struct DiceAssetHandles {
-    by_path: HashMap<String, GltfAssetHandles>,
-}
 
 pub(super) struct PendingRoll {
     pub arena: Entity,
     pub parsed: DiceRoll,
     pub terms: Vec<Vec<DieRef>>,
+    /// Per-term remaining reroll+explode budget, capped at [`crate::dice::MAX_OPTION_ITERATIONS`].
+    pub budgets: Vec<u32>,
 }
 
 pub(super) struct DieRef {
@@ -36,96 +31,96 @@ pub(super) struct DieRef {
 #[derive(Resource, Default)]
 pub(super) struct PendingRolls(pub HashMap<u64, PendingRoll>);
 
-pub(super) fn preload_dice_assets(
-    arenas: Query<&DiceArena>,
-    asset_server: Res<AssetServer>,
-    mut handles: ResMut<DiceAssetHandles>,
-) {
-    for arena in arenas.iter() {
-        if handles.by_path.contains_key(&arena.diceset) {
-            continue;
-        }
-        let mut bundle = GltfAssetHandles {
-            meshes: Vec::with_capacity(DieKind::ALL.len()),
-            materials: Vec::with_capacity(DieKind::ALL.len()),
-        };
-        for mesh_index in 0..DieKind::ALL.len() {
-            bundle.meshes.push(asset_server.load(
-                GltfAssetLabel::Primitive { mesh: mesh_index, primitive: 0 }
-                    .from_asset(arena.diceset.clone()),
-            ));
-            bundle.materials.push(asset_server.load(
-                GltfAssetLabel::Material { index: mesh_index, is_scale_inverted: false }
-                    .from_asset(arena.diceset.clone()),
-            ));
-        }
-        handles.by_path.insert(arena.diceset.clone(), bundle);
-    }
-}
-
 pub(super) fn handle_roll_requests(
     mut requests: MessageReader<RollRequest>,
     mut pending: ResMut<PendingRolls>,
     arenas: Query<&DiceArena>,
-    asset_server: Res<AssetServer>,
+    dicesets: Query<&Diceset>,
+    default_layer: Res<DiceRenderLayer>,
+    mut rng: ResMut<DiceRng>,
     mut commands: Commands,
 ) {
     for request in requests.read() {
         let Ok(arena) = arenas.get(request.arena) else {
-            eprintln!(
-                "warning: RollRequest {} targets unknown arena entity",
-                request.roll_id
-            );
+            warn!("RollRequest {} targets unknown arena entity", request.roll_id);
             continue;
         };
-        let mut rng = rand::thread_rng();
-        let mut terms: Vec<Vec<DieRef>> = Vec::with_capacity(request.roll.terms.len());
-        let mut spawned = 0usize;
-        let cap = MAX_DICE_PER_ROLL;
-
-        'terms: for term in &request.roll.terms {
-            let mut term_refs = Vec::new();
-            for _ in 0..term.count {
-                let base = throw_base(arena, &mut rng);
-                match term.kind {
-                    DieKind::D100 => {
-                        if spawned + 2 > cap {
-                            break 'terms;
-                        }
-                        let pair_offset = arena.spawn.pair_z_offset;
-                        let tens_state = member_state(&base, arena, -pair_offset, &mut rng);
-                        let ones_state = member_state(&base, arena, pair_offset, &mut rng);
-                        let tens = spawn_die(
-                            &mut commands, &asset_server, DieKind::D100, request.arena, arena,
-                            &tens_state,
-                        );
-                        let ones = spawn_die(
-                            &mut commands, &asset_server, DieKind::D10, request.arena, arena,
-                            &ones_state,
-                        );
-                        term_refs.push(DieRef { entity: tens, kind: DieKind::D100, pair_slot: Some(0) });
-                        term_refs.push(DieRef { entity: ones, kind: DieKind::D10, pair_slot: Some(1) });
-                        spawned += 2;
-                    }
-                    _ => {
-                        if spawned + 1 > cap {
-                            break 'terms;
-                        }
-                        let state = member_state(&base, arena, 0.0, &mut rng);
-                        let entity = spawn_die(
-                            &mut commands, &asset_server, term.kind, request.arena, arena, &state,
-                        );
-                        term_refs.push(DieRef { entity, kind: term.kind, pair_slot: None });
-                        spawned += 1;
-                    }
-                }
-            }
-            terms.push(term_refs);
-        }
-
+        let Ok(diceset) = dicesets.get(arena.diceset) else {
+            warn!("RollRequest {} arena's diceset entity is missing", request.roll_id);
+            continue;
+        };
+        let Some(handles) = diceset.handles() else {
+            warn!("RollRequest {} diceset handles not yet loaded", request.roll_id);
+            continue;
+        };
+        let layer = arena.render_layer.unwrap_or(default_layer.0);
+        let terms = spawn_roll_dice(&mut commands, arena, request.arena, &request.roll, handles, layer, &mut *rng);
+        let budgets = vec![MAX_OPTION_ITERATIONS; request.roll.terms.len()];
         pending.0.insert(
             request.roll_id,
-            PendingRoll { arena: request.arena, parsed: request.roll.clone(), terms },
+            PendingRoll { arena: request.arena, parsed: request.roll.clone(), terms, budgets },
         );
+    }
+}
+
+/// Spawns every die for `roll` in `arena`, capped at [`MAX_DICE_PER_ROLL`].
+/// Returns one [`DieRef`] vec per term (in source order).
+fn spawn_roll_dice<R: rand::Rng + ?Sized>(
+    commands: &mut Commands,
+    arena: &DiceArena,
+    arena_entity: Entity,
+    roll: &DiceRoll,
+    handles: &GltfAssetHandles,
+    layer: u8,
+    rng: &mut R,
+) -> Vec<Vec<DieRef>> {
+    let mut terms: Vec<Vec<DieRef>> = Vec::with_capacity(roll.terms.len());
+    let mut spawned = 0usize;
+    for term in &roll.terms {
+        let mut term_refs = Vec::new();
+        for _ in 0..term.count {
+            let needed = if term.kind == DieKind::D100 { 2 } else { 1 };
+            if spawned + needed > MAX_DICE_PER_ROLL {
+                warn!(
+                    "roll exceeds MAX_DICE_PER_ROLL ({}); remaining dice dropped",
+                    MAX_DICE_PER_ROLL
+                );
+                terms.push(term_refs);
+                return terms;
+            }
+            let member_refs = spawn_term_member(commands, arena, arena_entity, term.kind, handles, layer, rng);
+            spawned += member_refs.len();
+            term_refs.extend(member_refs);
+        }
+        terms.push(term_refs);
+    }
+    terms
+}
+
+/// Spawns one logical die member of a term (a d100 produces two entities).
+pub(super) fn spawn_term_member<R: rand::Rng + ?Sized>(
+    commands: &mut Commands,
+    arena: &DiceArena,
+    arena_entity: Entity,
+    kind: DieKind,
+    handles: &GltfAssetHandles,
+    layer: u8,
+    rng: &mut R,
+) -> Vec<DieRef> {
+    let base = throw_base(arena, rng);
+    if kind == DieKind::D100 {
+        let pair_offset = arena.spawn.pair_z_offset;
+        let tens_state = member_state(&base, arena, -pair_offset, rng);
+        let ones_state = member_state(&base, arena, pair_offset, rng);
+        let tens = spawn_die(commands, handles, DieKind::D100, arena_entity, arena, &tens_state, layer);
+        let ones = spawn_die(commands, handles, DieKind::D10, arena_entity, arena, &ones_state, layer);
+        vec![
+            DieRef { entity: tens, kind: DieKind::D100, pair_slot: Some(0) },
+            DieRef { entity: ones, kind: DieKind::D10, pair_slot: Some(1) },
+        ]
+    } else {
+        let state = member_state(&base, arena, 0.0, rng);
+        let entity = spawn_die(commands, handles, kind, arena_entity, arena, &state, layer);
+        vec![DieRef { entity, kind, pair_slot: None }]
     }
 }

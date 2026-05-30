@@ -1,39 +1,27 @@
-//! Playing-area component: the box that contains tumbling dice. Each
-//! [`DiceArena`] entity carries its own diceset, orientations, physics tuning,
-//! and throw-arc tuning. The walls + floor are spawned as child colliders by
-//! [`spawn_arena_walls`].
+//! [`DiceArena`] entity: a box that contains tumbling dice. Each arena
+//! references a [`super::Diceset`] entity by [`Entity`], plus its own
+//! physics and throw tuning.
 
 use avian3d::prelude::*;
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 
-use super::orientations::DiceOrientations;
-#[cfg(any(
-    feature = "plain_white",
-    feature = "halloween",
-    feature = "metal",
-    feature = "clear_orange"
-))]
-use super::orientations::load_orientations_from_bytes;
+use super::plugin::DiceRenderLayer;
 
 /// Thickness of the static wall/floor colliders that contain the dice.
 const WALL_THICKNESS: f32 = 0.5;
 
-/// A playing area. Spawn one per concurrent dice region. Dice tumble inside
-/// its box and report results scoped to it. Pair with [`DefaultArena`] to
-/// mark the arena that [`super::DiceRoller::roll`] uses when no arena is named.
-///
-/// Build with [`DiceArena::default`] + chained setters:
+/// A playing area; spawn one per concurrent dice region. Tag with
+/// [`DefaultArena`] to make it the target of [`super::DiceRoller::roll`].
+/// Holds a reference to a [`super::Diceset`] entity for its visuals; many
+/// arenas can share one diceset.
 ///
 /// ```ignore
-/// let arena = DiceArena::default()
-///     .name("user")
-///     .center(-10.0, 0.0, 0.0)
-///     .size(8.0, 4.0, 6.0)
-///     .diceset("plain_white_diceset")
-///     .orientations(load_orientations("/full/path/to/plain_white_diceset.glb"));
-/// commands.spawn((arena, DefaultArena));
+/// let diceset = commands.spawn(Diceset::embedded("plain_white")).id();
+/// commands.spawn((DiceArena::default().diceset(diceset), DefaultArena));
 /// ```
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
 pub struct DiceArena {
     /// Caller-supplied label for logging and debugging. Not enforced unique.
     pub name: String,
@@ -41,10 +29,12 @@ pub struct DiceArena {
     pub center: Vec3,
     /// Full extents (width, height, depth) of the arena's box.
     pub size: Vec3,
-    /// Asset-server path to the gltf containing this arena's diceset meshes.
-    pub diceset: String,
-    /// Local face-direction table for the diceset.
-    pub orientations: DiceOrientations,
+    /// Entity carrying the [`super::Diceset`] component this arena draws from.
+    /// `Entity::PLACEHOLDER` until [`DiceArena::diceset`] is called.
+    pub diceset: Entity,
+    /// Render layer for this arena's dice and overhead light. `None` falls
+    /// back to [`super::DicePlugin::render_layer`].
+    pub render_layer: Option<u8>,
     pub physics: DicePhysicsConfig,
     pub spawn: SpawnConfig,
 }
@@ -55,8 +45,8 @@ impl Default for DiceArena {
             name: String::new(),
             center: Vec3::ZERO,
             size: Vec3::new(12.0, 5.0, 6.0),
-            diceset: String::new(),
-            orientations: DiceOrientations::default(),
+            diceset: Entity::PLACEHOLDER,
+            render_layer: None,
             physics: DicePhysicsConfig::default(),
             spawn: SpawnConfig::default(),
         }
@@ -82,22 +72,17 @@ impl DiceArena {
         self
     }
 
-    /// Sets the diceset asset path. Accepts either the bare slug
-    /// (`"plain_white_diceset"`) or the full filename (with `.glb` or `.gltf`);
-    /// if neither extension is present, `.glb` is appended.
-    pub fn diceset(mut self, path: impl Into<String>) -> Self {
-        let mut value = path.into();
-        if !value.ends_with(".glb") && !value.ends_with(".gltf") {
-            value.push_str(".glb");
-        }
-        self.diceset = value;
+    /// Sets the [`super::Diceset`] entity this arena draws from. Spawn the
+    /// Diceset first (e.g. `commands.spawn(Diceset::embedded("halloween")).id()`).
+    pub fn diceset(mut self, diceset: Entity) -> Self {
+        self.diceset = diceset;
         self
     }
 
-    /// Sets the face-direction table the settle reader uses to map die
-    /// rotations back to face labels. Required for dice to report values.
-    pub fn orientations(mut self, orientations: DiceOrientations) -> Self {
-        self.orientations = orientations;
+    /// Overrides the render layer used for this arena's dice and overhead
+    /// light. Cameras that should see the dice must include this layer.
+    pub fn render_layer(mut self, layer: u8) -> Self {
+        self.render_layer = Some(layer);
         self
     }
 
@@ -114,74 +99,17 @@ impl DiceArena {
     }
 }
 
-// === embedded diceset constructors ===
-
-#[cfg(feature = "plain_white")]
-impl DiceArena {
-    /// Arena pre-configured with the embedded `plain_white` diceset. Requires
-    /// the `plain_white` cargo feature.
-    pub fn plain_white() -> Self {
-        Self::default()
-            .name("plain_white")
-            .diceset("embedded://bevy_dice/plain_white_diceset.glb")
-            .orientations(load_orientations_from_bytes(include_bytes!(
-                "../../assets/plain_white_diceset.glb"
-            )))
-    }
-}
-
-#[cfg(feature = "halloween")]
-impl DiceArena {
-    /// Arena pre-configured with the embedded `halloween` diceset. Requires
-    /// the `halloween` cargo feature.
-    pub fn halloween() -> Self {
-        Self::default()
-            .name("halloween")
-            .diceset("embedded://bevy_dice/halloween_diceset.glb")
-            .orientations(load_orientations_from_bytes(include_bytes!(
-                "../../assets/halloween_diceset.glb"
-            )))
-    }
-}
-
-#[cfg(feature = "metal")]
-impl DiceArena {
-    /// Arena pre-configured with the embedded `metal` diceset. Requires the
-    /// `metal` cargo feature.
-    pub fn metal() -> Self {
-        Self::default()
-            .name("metal")
-            .diceset("embedded://bevy_dice/metal_diceset.glb")
-            .orientations(load_orientations_from_bytes(include_bytes!(
-                "../../assets/metal_diceset.glb"
-            )))
-    }
-}
-
-#[cfg(feature = "clear_orange")]
-impl DiceArena {
-    /// Arena pre-configured with the embedded `clear_orange` diceset. Requires
-    /// the `clear_orange` cargo feature.
-    pub fn clear_orange() -> Self {
-        Self::default()
-            .name("clear_orange")
-            .diceset("embedded://bevy_dice/clear_orange_diceset.glb")
-            .orientations(load_orientations_from_bytes(include_bytes!(
-                "../../assets/clear_orange_diceset.glb"
-            )))
-    }
-}
-
-/// Marker for the arena [`super::DiceRoller::roll`] (no-arena form) targets.
-/// Add to at most one entity; if more than one carries this marker `roll`
-/// returns [`Err(NoDefaultArena::Ambiguous)`](super::NoDefaultArena).
-#[derive(Component, Default)]
+/// Marker for the arena targeted by [`super::DiceRoller::roll`]; tag at most
+/// one entity or `roll` returns [`super::NoDefaultArena::Ambiguous`].
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
 pub struct DefaultArena;
 
 /// Marker for the static walls and floor of an arena, parented under the
 /// arena entity itself. Field references the owning arena for queries that
 /// need to filter walls by arena.
-#[derive(Component)]
+#[derive(Component, Reflect)]
+#[reflect(Component)]
 pub struct DiceBoxWall {
     pub arena: Entity,
 }
@@ -194,7 +122,7 @@ pub(super) struct ArenaWallsSpawned;
 
 /// Tunables for the dice rigid bodies inside an arena. Passed straight to
 /// avian's per-body components when each die spawns.
-#[derive(Clone)]
+#[derive(Clone, Reflect)]
 pub struct DicePhysicsConfig {
     /// Bounciness on collision (0 = no bounce, 1 = elastic).
     pub restitution: f32,
@@ -219,7 +147,7 @@ impl Default for DicePhysicsConfig {
 
 /// Tunables for the throw arc when dice enter an arena. Each die spawns
 /// just outside one X wall and is given an inward velocity plus random spin.
-#[derive(Clone)]
+#[derive(Clone, Reflect)]
 pub struct SpawnConfig {
     /// Height above the box ceiling where dice begin their arc.
     pub height_above_box: f32,
@@ -264,61 +192,72 @@ impl Default for SpawnConfig {
     }
 }
 
-// === wall spawning ===
+// === wall + light spawning ===
 
-/// Spawns the floor + four walls under each newly-added [`DiceArena`] entity
-/// and tags the arena with [`ArenaWallsSpawned`] so this only runs once.
+/// Spawns the floor + four walls + overhead light under each newly-added
+/// [`DiceArena`] entity, then tags it with [`ArenaWallsSpawned`].
 pub(super) fn spawn_arena_walls(
     mut commands: Commands,
     new_arenas: Query<(Entity, &DiceArena), (Added<DiceArena>, Without<ArenaWallsSpawned>)>,
+    default_layer: Res<DiceRenderLayer>,
 ) {
     for (arena_entity, arena) in new_arenas.iter() {
         let center = arena.center;
-        let size = arena.size;
-        let half = size * 0.5;
+        let half = arena.size * 0.5;
         let wall_y = center.y + half.y;
-        let thickness = WALL_THICKNESS;
+        let t = WALL_THICKNESS;
 
-        let floor = commands
-            .spawn((
-                DiceBoxWall { arena: arena_entity },
-                RigidBody::Static,
-                Collider::cuboid(size.x, thickness, size.z),
-                Transform::from_xyz(center.x, center.y - thickness * 0.5, center.z),
-            ))
-            .id();
-        commands.entity(arena_entity).add_child(floor);
-
+        spawn_wall(
+            &mut commands, arena_entity,
+            Vec3::new(center.x, center.y - t * 0.5, center.z),
+            Vec3::new(arena.size.x, t, arena.size.z),
+        );
         for sign in [1.0_f32, -1.0] {
-            let wall = commands
-                .spawn((
-                    DiceBoxWall { arena: arena_entity },
-                    RigidBody::Static,
-                    Collider::cuboid(thickness, size.y, size.z),
-                    Transform::from_xyz(
-                        center.x + sign * (half.x + thickness * 0.5),
-                        wall_y,
-                        center.z,
-                    ),
-                ))
-                .id();
-            commands.entity(arena_entity).add_child(wall);
+            spawn_wall(
+                &mut commands, arena_entity,
+                Vec3::new(center.x + sign * (half.x + t * 0.5), wall_y, center.z),
+                Vec3::new(t, arena.size.y, arena.size.z),
+            );
+            spawn_wall(
+                &mut commands, arena_entity,
+                Vec3::new(center.x, wall_y, center.z + sign * (half.z + t * 0.5)),
+                Vec3::new(arena.size.x, arena.size.y, t),
+            );
         }
-        for sign in [1.0_f32, -1.0] {
-            let wall = commands
-                .spawn((
-                    DiceBoxWall { arena: arena_entity },
-                    RigidBody::Static,
-                    Collider::cuboid(size.x, size.y, thickness),
-                    Transform::from_xyz(
-                        center.x,
-                        wall_y,
-                        center.z + sign * (half.z + thickness * 0.5),
-                    ),
-                ))
-                .id();
-            commands.entity(arena_entity).add_child(wall);
-        }
+        spawn_arena_light(
+            &mut commands, arena_entity, center,
+            arena.render_layer.unwrap_or(default_layer.0),
+        );
         commands.entity(arena_entity).insert(ArenaWallsSpawned);
     }
+}
+
+/// Spawns one static collider as a child of `arena_entity`.
+fn spawn_wall(commands: &mut Commands, arena_entity: Entity, position: Vec3, size: Vec3) {
+    let wall = commands
+        .spawn((
+            DiceBoxWall { arena: arena_entity },
+            RigidBody::Static,
+            Collider::cuboid(size.x, size.y, size.z),
+            Transform::from_translation(position),
+        ))
+        .id();
+    commands.entity(arena_entity).add_child(wall);
+}
+
+/// Spawns an overhead directional light on `layer`, parented to the arena, so
+/// dice top faces read brightly regardless of host-scene lighting.
+fn spawn_arena_light(commands: &mut Commands, arena_entity: Entity, center: Vec3, layer: u8) {
+    let light = commands
+        .spawn((
+            DirectionalLight {
+                illuminance: 10_000.0,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(center.x, center.y + 10.0, center.z).looking_at(center, Vec3::Z),
+            RenderLayers::layer(layer as usize),
+        ))
+        .id();
+    commands.entity(arena_entity).add_child(light);
 }

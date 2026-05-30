@@ -1,9 +1,14 @@
 //! Physics-driven dice for Bevy 0.18.
 //!
-//! - [`dice`] - headless parsing, rolling, and option modifiers (no Bevy types).
-//! - [`ui`] - Bevy plugin, arena component, and roll request/complete messages.
+//! - [`dice`] - headless parse/roll/modifier math, no Bevy types.
+//! - [`ui`] - [`ui::DicePlugin`], [`ui::DiceArena`] + [`ui::Diceset`],
+//!   [`ui::DiceRoller`], and the [`ui::RollRequest`] / [`ui::RollComplete`]
+//!   messages.
 //!
-//! See the crate README for a quick-start example and the diceset feature flags.
+//! Dice render on render layer `0` by default; override per arena with
+//! [`ui::DiceArena::render_layer`] or globally with
+//! [`ui::DicePlugin::render_layer`]. Optional embedded dicesets:
+//! `plain_white`, `halloween`, `metal`, `clear_orange`.
 
 pub mod dice;
 pub mod ui;

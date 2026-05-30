@@ -36,20 +36,14 @@ impl fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 impl DiceRoll {
-    /// Parses a dice expression like `3d6+2` or `1d20-1d4+5`.
-    ///
-    /// Grammar: one or more `NdK` terms (count optional, defaults to 1)
-    /// and/or integer adjustments, separated by `+` or `-`. Whitespace is
-    /// ignored. Both `d` and `D` are accepted. Supported sides: 4, 6, 8, 10,
-    /// 12, 20, 100.
-    ///
-    /// # Examples
+    /// Parses `NdK` terms and integer adjustments joined by `+`/`-` (e.g.
+    /// `3d6+2`, `1d20-1d4+5`). Count defaults to 1, `d`/`D` both work,
+    /// whitespace is ignored, sides must be 4/6/8/10/12/20/100. A leading
+    /// `+` or `-` is rejected; write `3d6` rather than `+3d6`.
     ///
     /// ```
-    /// use bevy_dice::dice::DiceRoll;
-    ///
+    /// # use bevy_dice::dice::DiceRoll;
     /// let roll = DiceRoll::parse("3d6+2").unwrap();
-    /// assert_eq!(roll.terms.len(), 1);
     /// assert_eq!(roll.adjustment, 2);
     /// ```
     pub fn parse(input: &str) -> Result<DiceRoll, ParseError> {

@@ -1,5 +1,4 @@
-//! Headless dice math. Parse expressions, roll, apply option modifiers, and
-//! read totals - all without spawning anything in the Bevy world.
+//! Headless dice math: parse, roll, apply modifiers, read totals.
 
 pub mod kind;
 pub mod options;
@@ -9,4 +8,4 @@ pub mod roll;
 pub use kind::DieKind;
 pub use options::{Options, OptionsError, MAX_OPTION_ITERATIONS};
 pub use parser::ParseError;
-pub use roll::{DiceRoll, DiceTerm, RollOutcome, RolledDie};
+pub use roll::{DiceRoll, DiceTerm, RollOutcome, RollOutcomeDisplay, RolledDie};

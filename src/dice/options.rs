@@ -1,47 +1,55 @@
+use bevy::reflect::Reflect;
 use rand::Rng;
 
 use crate::dice::kind::DieKind;
 
-/// Shared budget across reroll-replacements and explode-additions per
-/// [`Options::apply`] call. Prevents pathological configs from looping or ballooning.
+/// Shared per-call cap on reroll-replacements + explode-additions.
 pub const MAX_OPTION_ITERATIONS: u32 = 100;
 
-/// Per-term roll modifiers. All fields default to `None` (no modification).
-/// Build with the `with_*` setters; apply order is reroll, explode, then the
-/// keep filters.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Per-term roll modifiers, applied in order: reroll, explode, keep.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Reflect)]
 pub struct Options {
+    /// Keep the top `n` dice after rolling, discarding the rest.
     pub keep_highest: Option<u32>,
+    /// Keep the bottom `n` dice after rolling, discarding the rest.
     pub keep_lowest: Option<u32>,
+    /// Reroll any die showing this value or lower until it exceeds it.
     pub reroll_at_or_below: Option<u32>,
+    /// Spawn an extra die whenever a roll meets or exceeds this value.
     pub explode_at_or_above: Option<u32>,
 }
 
-/// Failures from [`Options::validate_for`]. Settings that would loop forever
-/// or never trigger for the target [`DieKind`] are rejected.
+/// Settings that would loop forever or never trigger for a given [`DieKind`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OptionsError {
+    /// `keep_highest` or `keep_lowest` was set to zero.
     KeepZero,
+    /// `reroll_at_or_below` >= the die's max face, so every roll loops forever.
     RerollNotBelowMax { reroll: u32, sides: u32 },
+    /// `explode_at_or_above` <= 1, so every roll explodes forever.
     ExplodeNotAboveMin { explode: u32 },
 }
 
 impl Options {
+    /// Sets [`keep_highest`](Self::keep_highest).
     pub fn with_keep_highest(mut self, count: u32) -> Self {
         self.keep_highest = Some(count);
         self
     }
 
+    /// Sets [`keep_lowest`](Self::keep_lowest).
     pub fn with_keep_lowest(mut self, count: u32) -> Self {
         self.keep_lowest = Some(count);
         self
     }
 
+    /// Sets [`reroll_at_or_below`](Self::reroll_at_or_below).
     pub fn with_reroll_at_or_below(mut self, threshold: u32) -> Self {
         self.reroll_at_or_below = Some(threshold);
         self
     }
 
+    /// Sets [`explode_at_or_above`](Self::explode_at_or_above).
     pub fn with_explode_at_or_above(mut self, threshold: u32) -> Self {
         self.explode_at_or_above = Some(threshold);
         self
@@ -65,12 +73,16 @@ impl Options {
         Ok(())
     }
 
-    /// Applies reroll, explode, then keep-highest/keep-lowest. Reroll and explode
-    /// share one [`MAX_OPTION_ITERATIONS`] budget; both keep options compose.
+    /// Runs reroll + explode (sharing one [`MAX_OPTION_ITERATIONS`] budget) then keep.
     pub fn apply<R: Rng + ?Sized>(&self, kind: DieKind, rolls: &mut Vec<u32>, rng: &mut R) {
         let mut budget = MAX_OPTION_ITERATIONS;
         self.apply_reroll(kind, rolls, rng, &mut budget);
         self.apply_explode(kind, rolls, rng, &mut budget);
+        self.apply_keep(rolls);
+    }
+
+    /// RNG-free trim of `rolls` in place; the physics layer reuses this.
+    pub fn apply_keep(&self, rolls: &mut Vec<u32>) {
         self.apply_keep_highest(rolls);
         self.apply_keep_lowest(rolls);
     }
@@ -160,6 +172,15 @@ mod tests {
         let mut rolls = vec![1, 2, 3, 4, 5];
         Options::default().apply(DieKind::D6, &mut rolls, &mut rng());
         assert_eq!(rolls, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn apply_keep_only_trims_without_rng() {
+        let mut rolls = vec![3, 1, 5, 4, 2];
+        Options::default()
+            .with_keep_highest(2)
+            .apply_keep(&mut rolls);
+        assert_eq!(rolls, vec![5, 4]);
     }
 
     #[test]
