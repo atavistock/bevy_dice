@@ -36,55 +36,103 @@ asset server like any other gltf.
 
 ## Quick start
 
+- Add `DicePlugin::default()` to your `App` (after `DefaultPlugins`).
+- Enable one diceset feature so a default arena (and its `Diceset` entity)
+  auto-spawn at startup. Or spawn them yourself (see "Custom arena").
+- Trigger rolls with `roller.roll_expr("3d6+2")` (a `DiceRoller` system
+  param); read results from `MessageReader<RollComplete>`.
+
+No camera setup is required out of the box - dice render on layer `0`, the
+same layer as everything else in your scene.
+
+See `examples/simple_d20.rs` for a complete runnable setup.
+
+## Components and how they connect
+
+- **`Diceset`** - a gltf asset path plus its face-orientation table. Cached
+  mesh + material handles populate automatically once the asset loads. Spawn
+  one per distinct diceset; many arenas can share one.
+- **`DiceArena`** - a playing-area box. Holds an `Entity` reference to its
+  `Diceset` (use `.diceset(entity)`).
+- **`DefaultArena`** - marker component. Tag exactly one arena to make it
+  the target of `roller.roll(...)` / `roller.roll_expr("...")`.
+- **`SpawnedDie`** - marker on every die entity, plus the arena it belongs to.
+
+## Render layers
+
+By default, every dice entity and its overhead light spawn on render layer
+`0`, so any camera that renders your scene sees them with no extra setup.
+
+You can override the layer per arena (or globally on the plugin) to isolate
+the dice from the rest of your scene. This is useful when:
+
+- Your game already has its own lights on layer 0 that double-light the dice.
+- You want a HUD-style camera that only renders dice.
+- Split-screen: each player's arena draws on a different layer.
+
+To isolate, pick a non-zero layer, set it on the arena, and make sure your
+camera includes both the scene layer and the dice layer:
+
 ```rust
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
-use bevy_dice::dice::DiceRoll;
-use bevy_dice::ui::{DicePlugin, DiceRoller, RollComplete};
+use bevy_dice::ui::{DefaultArena, DiceArena, DicePlugin, Diceset};
 
-fn main() {
-    App::new()
-        .add_plugins(DefaultPlugins)
-        .add_plugins(DicePlugin::default())
-        .add_systems(Startup, roll_once)
-        .add_systems(Update, log_results)
-        .run();
-}
+const DICE_LAYER: u8 = 1;
 
-fn roll_once(mut roller: DiceRoller) {
-    let roll = DiceRoll::parse("3d6+2").unwrap();
-    let _ = roller.roll(roll);
-}
-
-fn log_results(mut completed: MessageReader<RollComplete>) {
-    for event in completed.read() {
-        info!("rolled {}", event.outcome.total);
-    }
-}
+App::new()
+    .add_plugins((
+        DefaultPlugins,
+        // Don't auto-spawn the default arena; we want to pin it to DICE_LAYER.
+        DicePlugin { spawn_default_arena: false, ..default() },
+    ))
+    .add_systems(Startup, |mut commands: Commands| {
+        commands.spawn((
+            Camera3d::default(),
+            Transform::from_xyz(0.0, 8.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+            RenderLayers::from_layers(&[0, DICE_LAYER as usize]),
+        ));
+        let diceset = commands.spawn(Diceset::embedded("plain_white")).id();
+        commands.spawn((
+            DiceArena::default().diceset(diceset).render_layer(DICE_LAYER),
+            DefaultArena,
+        ));
+    });
 ```
 
-With a diceset feature enabled, `DicePlugin::default()` auto-spawns a
-[`DiceArena`] tagged with [`DefaultArena`] so `roller.roll(...)` works with
-zero setup. Disable that with `DicePlugin { spawn_default_arena: false,
-..default() }` if you want to place arenas yourself.
+`DicePlugin::render_layer` sets the default for arenas that don't override
+it. `DiceArena::render_layer(N)` overrides per arena. The plugin spawns one
+overhead `DirectionalLight` per arena, on the arena's resolved layer.
+
+See `examples/isolated_layer.rs` for the full runnable version.
 
 ## Custom arena
 
 ```rust
-use bevy_dice::ui::{DefaultArena, DiceArena, load_orientations};
+use bevy_dice::ui::{DefaultArena, DiceArena, Diceset};
 
 fn setup(mut commands: Commands) {
-    let arena = DiceArena::default()
-        .name("table")
-        .center(0.0, 0.0, 0.0)
-        .size(12.0, 5.0, 6.0)
-        .diceset("my_diceset.glb")
-        .orientations(load_orientations("assets/my_diceset.glb"));
-    commands.spawn((arena, DefaultArena));
+    let diceset = commands.spawn(Diceset::embedded("halloween")).id();
+    commands.spawn((
+        DiceArena::default()
+            .name("table")
+            .center(0.0, 0.0, 0.0)
+            .size(12.0, 5.0, 6.0)
+            .diceset(diceset),
+        DefaultArena,
+    ));
 }
 ```
 
+`Diceset::embedded(slug)` resolves an enabled embedded feature's gltf bytes.
+For a custom diceset shipped in your `assets/` directory, use
+`Diceset::custom("my_diceset")` (it appends `.glb`/`.gltf` and reads
+orientations from `assets/{slug}`). If orientations live elsewhere, use
+`Diceset::custom_with(path, orientations)`.
+
 Spawn multiple `DiceArena` entities to run separate rolling regions in the
-same world. Tag at most one with `DefaultArena`; use
+same world. They can share a single `Diceset` (one mesh load, one
+orientation table, one spawn). Tag at most one with `DefaultArena`; use
 `DiceRoller::roll_in(arena_entity, roll)` to target a specific one.
 
 ## Dice expressions
@@ -97,7 +145,42 @@ d20+5            one d20 plus a flat 5
 ```
 
 Whitespace is ignored, `d` and `D` both work. Supported sides: 4, 6, 8, 10,
-12, 20, 100. See [`DiceRoll::parse`] for the full grammar.
+12, 20, 100. See [`DiceRoll::parse`] for the full grammar. A leading `+` or
+`-` is rejected; write `3d6`, not `+3d6`.
+
+## Triggering rolls
+
+```rust
+use bevy_dice::ui::DiceRoller;
+
+fn cast(mut roller: DiceRoller) {
+    // Parse + submit in one call.
+    let _ = roller.roll_expr("3d6+2");
+
+    // Or build a DiceRoll explicitly:
+    // let _ = roller.roll(DiceRoll::with_advantage(5));
+}
+```
+
+## Reading results
+
+```rust
+use bevy::prelude::*;
+use bevy_dice::ui::RollComplete;
+
+fn report(mut completed: MessageReader<RollComplete>) {
+    for event in completed.read() {
+        // Pretty-print "3d6(4,2,1) + 2 = 9"
+        info!("{}", event.outcome.display(&event.roll));
+
+        // Or read the raw fields:
+        info!("rolled {}", event.outcome.total);
+        for die in &event.outcome.dice {
+            info!("  d{}: {}", die.kind.sides(), die.value);
+        }
+    }
+}
+```
 
 ## Roll options
 
@@ -110,16 +193,32 @@ let roll = DiceRoll::parse("4d6").unwrap()
 
 - `keep_highest(n)` / `keep_lowest(n)` - drop dice after rolling.
 - `reroll_at_or_below(threshold)` - replace low rolls until above the
-  threshold (capped by `MAX_OPTION_ITERATIONS`).
+  threshold (capped by `MAX_OPTION_ITERATIONS` per term).
 - `explode_at_or_above(threshold)` - rolls hitting the threshold spawn an
   extra die (same cap).
 
-`DiceRoll::with_explode()` and `with_reroll_ones()` are shorthands for the
-common cases.
+`DiceRoll::with_explode()` and `with_reroll_ones()` are shorthands.
+`DiceRoll::with_advantage(modifier)` / `with_disadvantage(modifier)` build a
+standard 5e `2d20kh1` / `2d20kl1` roll plus the modifier.
+
+In the physics path, reroll and explode are re-simulated: a die that lands
+in the trigger range is despawned and a fresh one is thrown, until it
+clears or the budget runs out.
+
+## Determinism
+
+Physics systems pull from a `DiceRng` resource (a boxed `RngCore`). Default
+wraps `StdRng::from_entropy()`. For deterministic playback in tests, insert
+a seeded one:
+
+```rust
+use bevy_dice::ui::DiceRng;
+app.insert_resource(DiceRng::from_seed(0xD1CE));
+```
 
 ## Headless math
 
-If you only need the numbers, skip [`DicePlugin`] entirely:
+If you only need the numbers, skip `DicePlugin` entirely:
 
 ```rust
 use bevy_dice::dice::DiceRoll;
@@ -129,14 +228,23 @@ let total = DiceRoll::parse("3d6+2").unwrap().roll(&mut rand::thread_rng());
 
 `roll_detailed` additionally returns each individual die value.
 
-## Example
+## Examples
 
 ```
+cargo run --example simple_d20 --features plain_white
+cargo run --example isolated_layer --features plain_white
 cargo run --example tester --features plain_white
 ```
 
-An interactive window with a text field, a diceset selector, and a top-down
-view of the arena.
+- `simple_d20` - smallest possible setup (one roll, default camera).
+- `isolated_layer` - dice on render layer 1; camera spans 0 and 1.
+- `tester` - interactive text field, type expressions, press Enter to roll.
+
+## Inspector support
+
+All public components and messages derive `Reflect` and are registered with
+the type registry, so they show up in `bevy-inspector-egui` and similar
+tools.
 
 ## License
 

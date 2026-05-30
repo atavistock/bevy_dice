@@ -15,13 +15,12 @@ clear_orange = []
 
 [dependencies]
 avian3d = "0.6.1"
-bevy = "0.18"
+# `jpeg` is required because the diceset gltf files embed JPEG textures.
+bevy = { version = "0.18", features = ["jpeg"] }
 rand = "0.8"
-serde = { version = "1", features = ["derive"] }
+# Used only to read the `extras.dice_orientations` JSON block out of diceset
+# gltf files. Already in the dependency tree via bevy's gltf loader.
 serde_json = "1"
-
-[dev-dependencies]
-bevy_material_ui = "0.2.7"
 
 [lints.clippy]
 too_many_arguments = "allow"
@@ -29,6 +28,15 @@ type_complexity = "allow"
 
 [[example]]
 name = "tester"
+required-features = ["plain_white"]
+
+[[example]]
+name = "simple_d20"
+required-features = ["plain_white"]
+
+[[example]]
+name = "isolated_layer"
+required-features = ["plain_white"]
 
 [profile.dev]
 opt-level = 1
