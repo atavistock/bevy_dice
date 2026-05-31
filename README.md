@@ -23,16 +23,17 @@ bevy_dice = { version = "0.2", features = ["plain_white"] }
 The diceset features ship a `.glb` baked into the binary so you do not have
 to manage assets yourself:
 
-| feature         | size     | look                        |
-|-----------------|----------|-----------------------------|
-| `plain_white`   | small    | white plastic, black labels |
-| `halloween`     | small    | orange and black            |
-| `metal`         | small    | brushed metal               |
-| `clear_orange`  | small    | translucent orange          |
+- `plain_white` - white plastic, black labels
+- `halloween` - orange and black
+- `metal` - brushed metal
+- `clear_orange` - translucent orange
 
 Two larger textured sets (`frosty`, `fiery`) are not feature-gated; copy
 them out of this repo's `assets/` directory and load them through the
 asset server like any other gltf.
+
+I also have a process to generate custom dice, feel free to contact me
+with a request.
 
 ## Quick start
 
@@ -45,7 +46,7 @@ asset server like any other gltf.
 No camera setup is required out of the box - dice render on layer `0`, the
 same layer as everything else in your scene.
 
-See `examples/simple_d20.rs` for a complete runnable setup.
+See [`examples/simple_d20.rs`](examples/simple_d20.rs) for a complete runnable setup.
 
 ## Components and how they connect
 
@@ -104,7 +105,7 @@ App::new()
 it. `DiceArena::render_layer(N)` overrides per arena. The plugin spawns one
 overhead `DirectionalLight` per arena, on the arena's resolved layer.
 
-See `examples/isolated_layer.rs` for the full runnable version.
+See [`examples/isolated_layer.rs`](examples/isolated_layer.rs) for the full runnable version.
 
 ## Custom arena
 
@@ -236,9 +237,9 @@ cargo run --example isolated_layer --features plain_white
 cargo run --example tester --features plain_white
 ```
 
-- `simple_d20` - smallest possible setup (one roll, default camera).
-- `isolated_layer` - dice on render layer 1; camera spans 0 and 1.
-- `tester` - interactive text field, type expressions, press Enter to roll.
+- [`simple_d20`](examples/simple_d20.rs) - smallest possible setup (one roll, default camera).
+- [`isolated_layer`](examples/isolated_layer.rs) - dice on render layer 1; camera spans 0 and 1.
+- [`tester`](examples/tester.rs) - interactive text field, type expressions, press Enter to roll.
 
 ## Inspector support
 
@@ -248,4 +249,4 @@ tools.
 
 ## License
 
-See repository.
+Everything here is available under an MIT license. See [`LICENSE.txt`](LICENSE.txt).
