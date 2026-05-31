@@ -35,6 +35,17 @@ asset server like any other gltf.
 I also have a process to generate custom dice, feel free to contact me
 with a request.
 
+## Components and how they connect
+
+- **`Diceset`** - a gltf asset path plus its face-orientation table. Cached
+  mesh + material handles populate automatically once the asset loads. Spawn
+  one per distinct diceset; many arenas can share one.
+- **`DiceArena`** - a playing-area box. Holds an `Entity` reference to its
+  `Diceset` (use `.diceset(entity)`).
+- **`DefaultArena`** - marker component. Tag exactly one arena to make it
+  the target of `roller.roll(...)` / `roller.roll_expr("...")`.
+- **`SpawnedDie`** - marker on every die entity, plus the arena it belongs to.
+
 ## Quick start
 
 - Add `DicePlugin::default()` to your `App` (after `DefaultPlugins`).
@@ -46,18 +57,76 @@ with a request.
 No camera setup is required out of the box - dice render on layer `0`, the
 same layer as everything else in your scene.
 
-See [`examples/simple_d20.rs`](examples/simple_d20.rs) for a complete runnable setup.
+See [`examples/simple_d20.rs`](examples/simple_d20.rs), use` cargo run 
+--example simple_d20 --features plain_white` to run it.
 
-## Components and how they connect
+## Dice expressions
 
-- **`Diceset`** - a gltf asset path plus its face-orientation table. Cached
-  mesh + material handles populate automatically once the asset loads. Spawn
-  one per distinct diceset; many arenas can share one.
-- **`DiceArena`** - a playing-area box. Holds an `Entity` reference to its
-  `Diceset` (use `.diceset(entity)`).
-- **`DefaultArena`** - marker component. Tag exactly one arena to make it
-  the target of `roller.roll(...)` / `roller.roll_expr("...")`.
-- **`SpawnedDie`** - marker on every die entity, plus the arena it belongs to.
+```
+3d6              three six-siders
+d20+5            one d20 plus a flat 5
+2d6+1d4-1        compound expression with adjustment
+1d20-1d4         negated terms
+```
+
+Whitespace is ignored, `d` and `D` both work. Supported sides: 4, 6, 8, 10,
+12, 20, 100. See [`DiceRoll::parse`] for the full grammar. A leading `+` or
+`-` is rejected; write `3d6`, not `+3d6`.
+
+See [`dice_expressions`](examples/dice_expressions.rs), use `cargo run --example 
+dice_expressions --features plain_white` to run it.
+
+## Reading results
+
+```rust
+use bevy::prelude::*;
+use bevy_dice::ui::RollComplete;
+
+fn report(mut completed: MessageReader<RollComplete>) {
+    for event in completed.read() {
+        // Pretty-print "3d6(4,2,1) + 2 = 9"
+        info!("{}", event.outcome.display(&event.roll));
+
+        // Or read the raw fields:
+        info!("rolled {}", event.outcome.total);
+        for die in &event.outcome.dice {
+            info!("  d{}: {}", die.kind.sides(), die.value);
+        }
+    }
+}
+```
+
+Theres an example of this in [`dice_expressions`](examples/dice_expressions.rs),
+use `cargo run --example dice_expressions --features plain_white` to run it.
+
+## Custom arenas
+
+```rust
+use bevy_dice::ui::{DefaultArena, DiceArena, Diceset};
+
+fn setup(mut commands: Commands) {
+    let diceset = commands.spawn(Diceset::embedded("halloween")).id();
+    commands.spawn((
+        DiceArena::default()
+            .name("table")
+            .center(0.0, 0.0, 0.0)
+            .size(12.0, 5.0, 6.0)
+            .diceset(diceset),
+        DefaultArena,
+    ));
+}
+```
+
+`Diceset::embedded(slug)` resolves an enabled embedded feature's gltf bytes.
+For a custom diceset shipped in your `assets/` directory, use
+`Diceset::custom("my_diceset")` (it appends `.glb`/`.gltf` and reads
+orientations from `assets/{slug}`). If orientations live elsewhere, use
+`Diceset::custom_with(path, orientations)`.
+
+Spawn multiple `DiceArena` entities to run separate rolling regions in the
+same world. They can share a single `Diceset` (one mesh load, one
+orientation table, one spawn). Tag at most one with `DefaultArena`; use
+`DiceRoller::roll_in(arena_entity, roll)` to target a specific one.
 
 ## Render layers
 
@@ -105,83 +174,8 @@ App::new()
 it. `DiceArena::render_layer(N)` overrides per arena. The plugin spawns one
 overhead `DirectionalLight` per arena, on the arena's resolved layer.
 
-See [`examples/isolated_layer.rs`](examples/isolated_layer.rs) for the full runnable version.
-
-## Custom arena
-
-```rust
-use bevy_dice::ui::{DefaultArena, DiceArena, Diceset};
-
-fn setup(mut commands: Commands) {
-    let diceset = commands.spawn(Diceset::embedded("halloween")).id();
-    commands.spawn((
-        DiceArena::default()
-            .name("table")
-            .center(0.0, 0.0, 0.0)
-            .size(12.0, 5.0, 6.0)
-            .diceset(diceset),
-        DefaultArena,
-    ));
-}
-```
-
-`Diceset::embedded(slug)` resolves an enabled embedded feature's gltf bytes.
-For a custom diceset shipped in your `assets/` directory, use
-`Diceset::custom("my_diceset")` (it appends `.glb`/`.gltf` and reads
-orientations from `assets/{slug}`). If orientations live elsewhere, use
-`Diceset::custom_with(path, orientations)`.
-
-Spawn multiple `DiceArena` entities to run separate rolling regions in the
-same world. They can share a single `Diceset` (one mesh load, one
-orientation table, one spawn). Tag at most one with `DefaultArena`; use
-`DiceRoller::roll_in(arena_entity, roll)` to target a specific one.
-
-## Dice expressions
-
-```
-3d6              three six-siders
-d20+5            one d20 plus a flat 5
-2d6+1d4-1        compound expression with adjustment
-1d20-1d4         negated terms
-```
-
-Whitespace is ignored, `d` and `D` both work. Supported sides: 4, 6, 8, 10,
-12, 20, 100. See [`DiceRoll::parse`] for the full grammar. A leading `+` or
-`-` is rejected; write `3d6`, not `+3d6`.
-
-## Triggering rolls
-
-```rust
-use bevy_dice::ui::DiceRoller;
-
-fn cast(mut roller: DiceRoller) {
-    // Parse + submit in one call.
-    let _ = roller.roll_expr("3d6+2");
-
-    // Or build a DiceRoll explicitly:
-    // let _ = roller.roll(DiceRoll::with_advantage(5));
-}
-```
-
-## Reading results
-
-```rust
-use bevy::prelude::*;
-use bevy_dice::ui::RollComplete;
-
-fn report(mut completed: MessageReader<RollComplete>) {
-    for event in completed.read() {
-        // Pretty-print "3d6(4,2,1) + 2 = 9"
-        info!("{}", event.outcome.display(&event.roll));
-
-        // Or read the raw fields:
-        info!("rolled {}", event.outcome.total);
-        for die in &event.outcome.dice {
-            info!("  d{}: {}", die.kind.sides(), die.value);
-        }
-    }
-}
-```
+See [`examples/isolated_layer.rs`](examples/isolated_layer.rs), use `cargo run 
+--example isolated_layer --features plain_white` to run it.
 
 ## Roll options
 
@@ -228,18 +222,6 @@ let total = DiceRoll::parse("3d6+2").unwrap().roll(&mut rand::thread_rng());
 ```
 
 `roll_detailed` additionally returns each individual die value.
-
-## Examples
-
-```
-cargo run --example simple_d20 --features plain_white
-cargo run --example isolated_layer --features plain_white
-cargo run --example tester --features plain_white
-```
-
-- [`simple_d20`](examples/simple_d20.rs) - smallest possible setup (one roll, default camera).
-- [`isolated_layer`](examples/isolated_layer.rs) - dice on render layer 1; camera spans 0 and 1.
-- [`tester`](examples/tester.rs) - interactive text field, type expressions, press Enter to roll.
 
 ## Inspector support
 

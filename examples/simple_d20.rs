@@ -1,7 +1,18 @@
-//! `cargo run --example simple_d20 --features plain_white`
+//! The smallest possible bevy_dice setup: add the plugin, spawn a camera,
+//! roll once. With the `plain_white` feature enabled, `DicePlugin` auto-
+//! spawns both a `Diceset` entity and a `DiceArena` tagged as the default,
+//! so `roller.roll_expr(...)` has somewhere to throw the dice.
+//!
+//! Run: `cargo run --example simple_d20 --features plain_white`
 
 use bevy::prelude::*;
-use bevy_dice::ui::{DiceRoller, DicePlugin};
+use bevy_dice::ui::{DicePlugin, DiceRoller};
+
+#[path = "common/mod.rs"]
+mod common;
+use common::top_down_camera;
+
+// === boilerplate ===
 
 fn main() {
     App::new()
@@ -11,14 +22,15 @@ fn main() {
         .run();
 }
 
-fn roll_once(mut roller: DiceRoller) {
-    let _ = roller.roll_expr("1d20");
+fn setup_scene(mut commands: Commands) {
+    commands.spawn(top_down_camera(14.0));
 }
 
-fn setup_scene(mut commands: Commands) {
-    // Default render_layer is 0, so a plain camera renders the dice too.
-    commands.spawn((
-        Camera3d::default(),
-        Transform::from_xyz(0.0, 8.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+// === example ===
+
+/// Fires one d20 into the default arena. `roll_expr` parses the expression
+/// and submits it in a single call; the returned `Result` carries the
+/// roll id (we ignore it) or a `RollError` if parsing or arena lookup fails.
+fn roll_once(mut roller: DiceRoller) {
+    let _ = roller.roll_expr("1d20");
 }

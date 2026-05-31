@@ -245,17 +245,22 @@ fn spawn_wall(commands: &mut Commands, arena_entity: Entity, position: Vec3, siz
     commands.entity(arena_entity).add_child(wall);
 }
 
-/// Spawns an overhead directional light on `layer`, parented to the arena, so
-/// dice top faces read brightly regardless of host-scene lighting.
+/// Spawns an overhead directional light on `layer`, parented to the arena.
+/// The light is angled ~30deg off vertical with shadows on so the die's
+/// polyhedral facets read clearly from above (a purely vertical light
+/// would flatten the top face into a featureless silhouette).
 fn spawn_arena_light(commands: &mut Commands, arena_entity: Entity, center: Vec3, layer: u8) {
     let light = commands
         .spawn((
             DirectionalLight {
                 illuminance: 10_000.0,
-                shadows_enabled: false,
+                shadows_enabled: true,
                 ..default()
             },
-            Transform::from_xyz(center.x, center.y + 10.0, center.z).looking_at(center, Vec3::Z),
+            // Offset on X+Z so the light comes from above-corner; the dice
+            // pick up varying shading on each face as they tumble.
+            Transform::from_xyz(center.x + 5.0, center.y + 10.0, center.z + 5.0)
+                .looking_at(center, Vec3::Y),
             RenderLayers::layer(layer as usize),
         ))
         .id();

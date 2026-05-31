@@ -27,16 +27,20 @@ too_many_arguments = "allow"
 type_complexity = "allow"
 
 [[example]]
-name = "tester"
+name = "simple_d20"
 required-features = ["plain_white"]
 
 [[example]]
-name = "simple_d20"
+name = "dice_expressions"
 required-features = ["plain_white"]
 
 [[example]]
 name = "isolated_layer"
 required-features = ["plain_white"]
+
+[[example]]
+name = "two_arenas"
+required-features = ["plain_white", "halloween"]
 
 [profile.dev]
 opt-level = 1
