@@ -14,9 +14,9 @@ metal = []
 clear_orange = []
 
 [dependencies]
-avian3d = "0.6.1"
+avian3d = "0.7.0"
 # `jpeg` is required because the diceset gltf files embed JPEG textures.
-bevy = { version = "0.18", features = ["jpeg"] }
+bevy = { version = "0.19", features = ["jpeg"] }
 rand = "0.8"
 # Used only to read the `extras.dice_orientations` JSON block out of diceset
 # gltf files. Already in the dependency tree via bevy's gltf loader.

@@ -254,7 +254,7 @@ fn spawn_arena_light(commands: &mut Commands, arena_entity: Entity, center: Vec3
         .spawn((
             DirectionalLight {
                 illuminance: 10_000.0,
-                shadows_enabled: true,
+                shadow_maps_enabled: true,
                 ..default()
             },
             // Offset on X+Z so the light comes from above-corner; the dice

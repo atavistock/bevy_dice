@@ -126,7 +126,7 @@ fn spawn_arena_text(commands: &mut Commands, arena: Entity, left: Val) {
         .with_children(|root| {
             root.spawn((
                 Text::new("Rolling..."),
-                TextFont { font_size: 64.0, ..default() },
+                TextFont { font_size: FontSize::Px(64.0), ..default() },
                 TextColor(Color::WHITE),
                 ArenaLabel(arena),
             ));
