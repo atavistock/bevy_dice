@@ -170,16 +170,12 @@ impl<'a> Lexer<'a> {
         let next = self.peek();
         if matches!(next, Some(b'd' | b'D')) {
             self.cursor += 1;
-            let sides = self.read_digits()?.ok_or(ParseError::Malformed {
-                position: self.cursor,
-                reason: "expected digits after 'd'",
-            })?;
+            let sides = self
+                .read_digits()?
+                .ok_or(ParseError::Malformed { position: self.cursor, reason: "expected digits after 'd'" })?;
             Ok(Token::Dice { count: leading.unwrap_or(1), sides })
         } else {
-            let value = leading.ok_or(ParseError::Malformed {
-                position,
-                reason: "expected number or dice term",
-            })?;
+            let value = leading.ok_or(ParseError::Malformed { position, reason: "expected number or dice term" })?;
             Ok(Token::Number(value))
         }
     }

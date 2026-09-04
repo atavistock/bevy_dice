@@ -25,10 +25,7 @@ use bevy_dice::ui::DiceArena;
 /// that world +X maps to screen-right and world +Z maps to screen-down,
 /// matching the usual top-down game convention.
 pub fn top_down_camera(height: f32) -> impl Bundle {
-    (
-        Camera3d::default(),
-        Transform::from_xyz(0.0, height, 0.0).looking_at(Vec3::ZERO, Vec3::NEG_Z),
-    )
+    (Camera3d::default(), Transform::from_xyz(0.0, height, 0.0).looking_at(Vec3::ZERO, Vec3::NEG_Z))
 }
 
 /// Same as [`top_down_camera`] but the camera renders the scene's default
@@ -115,10 +112,7 @@ pub fn drive_text_input(
             let current = text.0.strip_prefix(&input.prompt).unwrap_or("").to_string();
             match &event.logical_key {
                 Key::Enter => {
-                    submitted.write(TextInputSubmitted {
-                        entity,
-                        value: current.trim().to_string(),
-                    });
+                    submitted.write(TextInputSubmitted { entity, value: current.trim().to_string() });
                     text.0 = input.prompt.clone();
                 }
                 Key::Backspace => {

@@ -124,7 +124,6 @@ impl Options {
             keep(rolls, count, false);
         }
     }
-
 }
 
 /// Action a settled die value requests under [`Options::modifier_for`].
@@ -170,45 +169,35 @@ mod tests {
     #[test]
     fn apply_keep_only_trims_without_rng() {
         let mut rolls = vec![3, 1, 5, 4, 2];
-        Options::default()
-            .with_keep_highest(2)
-            .apply_keep(&mut rolls);
+        Options::default().with_keep_highest(2).apply_keep(&mut rolls);
         assert_eq!(rolls, vec![5, 4]);
     }
 
     #[test]
     fn keep_highest_trims_to_top_count() {
         let mut rolls = vec![3, 1, 5, 4, 2];
-        Options::default()
-            .with_keep_highest(2)
-            .apply(DieKind::D6, &mut rolls, &mut rng());
+        Options::default().with_keep_highest(2).apply(DieKind::D6, &mut rolls, &mut rng());
         assert_eq!(rolls, vec![5, 4]);
     }
 
     #[test]
     fn keep_lowest_trims_to_bottom_count() {
         let mut rolls = vec![3, 1, 5, 4, 2];
-        Options::default()
-            .with_keep_lowest(2)
-            .apply(DieKind::D6, &mut rolls, &mut rng());
+        Options::default().with_keep_lowest(2).apply(DieKind::D6, &mut rolls, &mut rng());
         assert_eq!(rolls, vec![1, 2]);
     }
 
     #[test]
     fn keep_count_at_or_above_len_is_noop() {
         let mut rolls = vec![3, 1, 5];
-        Options::default()
-            .with_keep_highest(5)
-            .apply(DieKind::D6, &mut rolls, &mut rng());
+        Options::default().with_keep_highest(5).apply(DieKind::D6, &mut rolls, &mut rng());
         assert_eq!(rolls.len(), 3);
     }
 
     #[test]
     fn reroll_replaces_low_values_until_above_threshold() {
         let mut rolls = vec![1, 1, 6];
-        Options::default()
-            .with_reroll_at_or_below(1)
-            .apply(DieKind::D6, &mut rolls, &mut rng());
+        Options::default().with_reroll_at_or_below(1).apply(DieKind::D6, &mut rolls, &mut rng());
         assert!(rolls.iter().all(|&r| r > 1));
         assert_eq!(rolls.len(), 3);
     }
@@ -217,28 +206,29 @@ mod tests {
     fn explode_adds_dice_for_max_rolls() {
         let mut rolls = vec![6, 3, 6];
         let before = rolls.len();
-        Options::default()
-            .with_explode_at_or_above(6)
-            .apply(DieKind::D6, &mut rolls, &mut rng());
+        Options::default().with_explode_at_or_above(6).apply(DieKind::D6, &mut rolls, &mut rng());
         assert!(rolls.len() >= before + 2);
     }
 
     #[test]
     fn reroll_also_applies_to_exploded_dice() {
         let mut rolls = vec![6, 6, 6, 6];
-        Options::default()
-            .with_reroll_at_or_below(3)
-            .with_explode_at_or_above(6)
-            .apply(DieKind::D6, &mut rolls, &mut rng());
+        Options::default().with_reroll_at_or_below(3).with_explode_at_or_above(6).apply(
+            DieKind::D6,
+            &mut rolls,
+            &mut rng(),
+        );
         assert!(rolls.len() > 4);
         assert!(rolls.iter().all(|&r| r > 3), "{rolls:?}");
     }
 
     #[test]
     fn modifier_for_prefers_reroll_and_explodes_once() {
-        let options = Options::default().with_reroll_at_or_below(6).with_explode_at_or_above(5);
-        assert_eq!(options.modifier_for(DieKind::D6, 6, false), Some(Modifier::Reroll));
-        assert_eq!(options.modifier_for(DieKind::D6, 6, true), Some(Modifier::Reroll));
+        let options = Options::default().with_reroll_at_or_below(5).with_explode_at_or_above(5);
+        assert_eq!(options.modifier_for(DieKind::D6, 5, false), Some(Modifier::Reroll));
+        assert_eq!(options.modifier_for(DieKind::D6, 5, true), Some(Modifier::Reroll));
+        assert_eq!(options.modifier_for(DieKind::D6, 6, false), Some(Modifier::Explode));
+        assert_eq!(Options::default().with_reroll_at_or_below(6).modifier_for(DieKind::D6, 6, false), None);
         let options = Options::default().with_explode_at_or_above(5);
         assert_eq!(options.modifier_for(DieKind::D6, 5, false), Some(Modifier::Explode));
         assert_eq!(options.modifier_for(DieKind::D6, 5, true), None);
@@ -249,9 +239,7 @@ mod tests {
     fn iterations_capped_to_max() {
         let original_count = (MAX_OPTION_ITERATIONS as usize) * 2;
         let mut rolls = vec![1; original_count];
-        Options::default()
-            .with_explode_at_or_above(1)
-            .apply(DieKind::D6, &mut rolls, &mut rng());
+        Options::default().with_explode_at_or_above(1).apply(DieKind::D6, &mut rolls, &mut rng());
         let added = rolls.len() - original_count;
         assert_eq!(added, MAX_OPTION_ITERATIONS as usize);
     }
@@ -264,9 +252,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_reroll_at_or_above_sides() {
-        let result = Options::default()
-            .with_reroll_at_or_below(6)
-            .validate_for(DieKind::D6);
+        let result = Options::default().with_reroll_at_or_below(6).validate_for(DieKind::D6);
         assert!(matches!(result, Err(OptionsError::RerollNotBelowMax { .. })));
     }
 

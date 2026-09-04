@@ -6,15 +6,15 @@ use bevy::prelude::*;
 
 use crate::dice::{DiceRoll, DiceTerm, DieKind, Options, RollOutcome, RolledDie};
 
-use super::arena::{spawn_arena_walls, DefaultArena, DiceArena, DiceBoxWall, DicePhysicsConfig, SpawnConfig};
-use super::diceset::{embedded_table, load_diceset_handles, Diceset};
-use super::pending::{handle_roll_requests, PendingRolls};
+use super::arena::{DefaultArena, DiceArena, DiceBoxWall, DicePhysicsConfig, SpawnConfig, spawn_arena_walls};
+use super::diceset::{Diceset, embedded_table, load_diceset_handles};
+use super::pending::{PendingRolls, handle_roll_requests};
 use super::resolve::{despawn_orphaned_dice, prune_orphaned_pending_rolls, resolve_pending_rolls};
 use super::rng::DiceRng;
-use super::spawn::SpawnedDie;
 use super::roller::{NextRollId, RollComplete, RollRequest};
+use super::spawn::SpawnedDie;
 
-/// Adds avian3d physics, the roll request/complete messages, the
+/// Adds avian3d physics (unless the host already did), the roll request/complete messages, the
 /// tumble/settle/emit pipeline, and an overhead [`DirectionalLight`] for the
 /// dice. With an embedded diceset feature enabled, auto-spawns a [`DiceArena`]
 /// tagged [`DefaultArena`] unless
@@ -25,8 +25,9 @@ use super::roller::{NextRollId, RollComplete, RollRequest};
 /// Set [`render_layer`](Self::render_layer) to a non-zero layer to isolate
 /// dice (the camera then needs `RenderLayers::from_layers(&[0, N])`).
 pub struct DicePlugin {
-    /// World-space gravity along -Y in m/s^2; default `-23.1` (tabletop feel).
-    pub gravity: f32,
+    /// World-space gravity along -Y in m/s^2. `None` uses `-23.1` (tabletop feel)
+    /// when this plugin adds avian, and leaves the host's `Gravity` alone otherwise.
+    pub gravity: Option<f32>,
     /// Auto-spawn a [`DiceArena`] + [`DefaultArena`] for the enabled embedded
     /// diceset feature. Set `false` when supplying your own arena.
     pub spawn_default_arena: bool,
@@ -38,13 +39,12 @@ pub struct DicePlugin {
 
 impl Default for DicePlugin {
     fn default() -> Self {
-        Self {
-            gravity: -23.1,
-            spawn_default_arena: true,
-            render_layer: 0,
-        }
+        Self { gravity: None, spawn_default_arena: true, render_layer: 0 }
     }
 }
+
+/// Gravity applied when this plugin owns the avian install; feels like a tabletop.
+const DEFAULT_GRAVITY: f32 = -23.1;
 
 /// Resource holding the active [`DicePlugin::render_layer`] for spawn-time use.
 #[derive(Resource, Clone, Copy)]
@@ -54,16 +54,21 @@ impl Plugin for DicePlugin {
     fn build(&self, app: &mut App) {
         register_embedded_dicesets(app);
 
-        let gravity = self.gravity;
         let render_layer = self.render_layer;
-        app.add_plugins(PhysicsPlugins::default())
-            .init_resource::<PendingRolls>()
+        let host_has_physics = app.is_plugin_added::<PhysicsSchedulePlugin>();
+        if !host_has_physics {
+            app.add_plugins(PhysicsPlugins::default());
+        }
+        let gravity = self.gravity.or((!host_has_physics).then_some(DEFAULT_GRAVITY));
+        if let Some(gravity) = gravity {
+            app.insert_resource(Gravity(Vec3::new(0.0, gravity, 0.0)));
+        }
+        app.init_resource::<PendingRolls>()
             .init_resource::<NextRollId>()
             .init_resource::<DiceRng>()
             .insert_resource(DiceRenderLayer(render_layer))
             .add_message::<RollRequest>()
             .add_message::<RollComplete>()
-            .insert_resource(Gravity(Vec3::new(0.0, gravity, 0.0)))
             .register_type::<DiceArena>()
             .register_type::<DefaultArena>()
             .register_type::<DiceBoxWall>()
@@ -90,12 +95,7 @@ impl Plugin for DicePlugin {
                 ),
             );
 
-        #[cfg(any(
-            feature = "plain_white",
-            feature = "halloween",
-            feature = "metal",
-            feature = "clear_orange"
-        ))]
+        #[cfg(any(feature = "plain_white", feature = "halloween", feature = "metal", feature = "clear_orange"))]
         if self.spawn_default_arena {
             app.add_systems(Startup, spawn_default_arena_system);
         }
@@ -109,30 +109,18 @@ fn register_embedded_dicesets(app: &mut App) {
         return;
     }
     use bevy::asset::io::embedded::EmbeddedAssetRegistry;
-    let embedded = app
-        .world()
-        .get_resource::<EmbeddedAssetRegistry>()
-        .expect(
-            "DicePlugin requires bevy::asset::AssetPlugin (provided by DefaultPlugins). \
+    let embedded = app.world().get_resource::<EmbeddedAssetRegistry>().expect(
+        "DicePlugin requires bevy::asset::AssetPlugin (provided by DefaultPlugins). \
              Add DefaultPlugins before DicePlugin.",
-        );
+    );
     for (name, bytes) in table {
         let asset_path = format!("bevy_dice/{name}_diceset.glb");
-        embedded.insert_asset(
-            std::path::PathBuf::new(),
-            std::path::Path::new(&asset_path),
-            *bytes,
-        );
+        embedded.insert_asset(std::path::PathBuf::new(), std::path::Path::new(&asset_path), *bytes);
     }
 }
 
 /// Auto-spawns a [`Diceset`] + [`DiceArena`] for the first entry in [`embedded_table`].
-#[cfg(any(
-    feature = "plain_white",
-    feature = "halloween",
-    feature = "metal",
-    feature = "clear_orange"
-))]
+#[cfg(any(feature = "plain_white", feature = "halloween", feature = "metal", feature = "clear_orange"))]
 fn spawn_default_arena_system(mut commands: Commands) {
     if let Some((name, _)) = embedded_table().first() {
         let diceset = commands.spawn(Diceset::embedded(name)).id();

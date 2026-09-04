@@ -42,23 +42,11 @@ pub(super) fn throw_base<R: Rng + ?Sized>(arena: &DiceArena, rng: &mut R) -> Thr
     let entry_x = arena.center.x + entry_sign * (half.x + spawn.outside_box_buffer);
     let z_jitter = (rng.gen_range(0.0_f32..1.0) - 0.5) * arena.size.z * spawn.z_spread_fraction;
     let base_z = arena.center.z + z_jitter;
-    let base_y = arena.center.y
-        + arena.size.y
-        + spawn.height_above_box
-        - rng.gen_range(0.0_f32..1.0) * spawn.y_jitter;
-    let speed_multiplier =
-        spawn.speed_min_factor + rng.gen_range(0.0_f32..1.0) * spawn.speed_jitter;
+    let base_y = arena.center.y + arena.size.y + spawn.height_above_box - rng.gen_range(0.0_f32..1.0) * spawn.y_jitter;
+    let speed_multiplier = spawn.speed_min_factor + rng.gen_range(0.0_f32..1.0) * spawn.speed_jitter;
     let horizontal_speed = spawn.speed * speed_multiplier;
-    let z_velocity =
-        (rng.gen_range(0.0_f32..1.0) - 0.5) * spawn.speed * spawn.z_velocity_jitter_fraction;
-    ThrowBase {
-        entry_sign,
-        entry_x,
-        base_z,
-        base_y,
-        horizontal_speed,
-        z_velocity,
-    }
+    let z_velocity = (rng.gen_range(0.0_f32..1.0) - 0.5) * spawn.speed * spawn.z_velocity_jitter_fraction;
+    ThrowBase { entry_sign, entry_x, base_z, base_y, horizontal_speed, z_velocity }
 }
 
 pub(super) struct SpawnState {
@@ -83,12 +71,7 @@ pub(super) fn member_state<R: Rng + ?Sized>(
     );
     let rotation = random_quat(rng);
     let angular_velocity = random_unit_vec(rng) * spawn.speed * spawn.angular_speed_factor;
-    SpawnState {
-        position,
-        velocity,
-        rotation,
-        angular_velocity,
-    }
+    SpawnState { position, velocity, rotation, angular_velocity }
 }
 
 pub(super) fn spawn_die(

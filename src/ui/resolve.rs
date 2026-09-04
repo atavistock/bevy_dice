@@ -6,12 +6,12 @@ use std::ops::Range;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use crate::dice::{DieKind, Options, RollOutcome, RolledDie};
+use crate::dice::{DieKind, Modifier, Options, RollOutcome, RolledDie};
 
 use super::arena::DiceArena;
 use super::diceset::Diceset;
 use super::orientations::DiceOrientations;
-use super::pending::{spawn_term_member, DieRef, PendingRoll, PendingRolls};
+use super::pending::{DieRef, PendingRoll, PendingRolls, spawn_term_member};
 use super::plugin::DiceRenderLayer;
 use super::rng::DiceRng;
 use super::roller::RollComplete;
@@ -137,12 +137,9 @@ fn perturb_stuck_dice<R: rand::Rng + ?Sized>(
 ) {
     for &entity in to_perturb {
         if let Ok(mut angular_velocity) = wake_dice.get_mut(entity) {
-            let direction = Vec3::new(
-                rng.gen_range(-1.0..1.0_f32),
-                rng.gen_range(-0.2..0.2_f32),
-                rng.gen_range(-1.0..1.0_f32),
-            )
-            .normalize_or_zero();
+            let direction =
+                Vec3::new(rng.gen_range(-1.0..1.0_f32), rng.gen_range(-0.2..0.2_f32), rng.gen_range(-1.0..1.0_f32))
+                    .normalize_or_zero();
             angular_velocity.0 = direction * PERTURB_ANGULAR_SPEED;
         }
     }
@@ -164,7 +161,14 @@ fn apply_physics_modifiers<'a, R: rand::Rng + ?Sized>(
         let Some(handles) = ready_roll.diceset.handles() else { continue };
         let layer = ready_roll.arena.render_layer.unwrap_or(default_layer);
         let modified = trigger_term_modifiers(
-            roll, ready_roll.arena, ready_roll.diceset, handles, layer, &ready_roll.rotations, commands, rng,
+            roll,
+            ready_roll.arena,
+            ready_roll.diceset,
+            handles,
+            layer,
+            &ready_roll.rotations,
+            commands,
+            rng,
         );
         if !modified {
             truly_ready.push(ready_roll);
@@ -191,7 +195,8 @@ fn trigger_term_modifiers<R: rand::Rng + ?Sized>(
         if term.options.reroll_at_or_below.is_none() && term.options.explode_at_or_above.is_none() {
             continue;
         }
-        let triggers = find_triggers(&roll.terms[term_index], &term.options, rotations, &diceset.orientations);
+        let triggers =
+            find_triggers(&roll.terms[term_index], term.kind, &term.options, rotations, &diceset.orientations);
         if triggers.is_empty() {
             continue;
         }
@@ -235,6 +240,7 @@ enum Trigger {
 
 fn find_triggers(
     term_refs: &[DieRef],
+    kind: DieKind,
     options: &Options,
     rotations: &HashMap<Entity, Quat>,
     orientations: &DiceOrientations,
@@ -243,17 +249,10 @@ fn find_triggers(
     let mut index = 0;
     while index < term_refs.len() {
         let (value, range) = read_member_value(term_refs, index, rotations, orientations);
-        if let Some(threshold) = options.reroll_at_or_below {
-            if value <= threshold {
-                triggers.push(Trigger::Reroll(range.clone()));
-                index = range.end;
-                continue;
-            }
-        }
-        if let Some(threshold) = options.explode_at_or_above {
-            if value >= threshold && !term_refs[index].exploded {
-                triggers.push(Trigger::Explode(index));
-            }
+        match options.modifier_for(kind, value, term_refs[index].exploded) {
+            Some(Modifier::Reroll) => triggers.push(Trigger::Reroll(range.clone())),
+            Some(Modifier::Explode) => triggers.push(Trigger::Explode(index)),
+            None => {}
         }
         index = range.end;
     }
@@ -289,12 +288,7 @@ fn emit_completed_rolls(
     for ready_roll in ready {
         let Some(roll) = pending.0.remove(&ready_roll.roll_id) else { continue };
         let outcome = compute_outcome(&roll, &ready_roll.rotations, &ready_roll.diceset.orientations);
-        completed.write(RollComplete {
-            roll_id: ready_roll.roll_id,
-            roll: roll.parsed,
-            outcome,
-            arena: roll.arena,
-        });
+        completed.write(RollComplete { roll_id: ready_roll.roll_id, roll: roll.parsed, outcome, arena: roll.arena });
     }
 }
 
@@ -337,11 +331,7 @@ fn collect_term_values(
     values
 }
 
-fn read_die_value(
-    reference: &DieRef,
-    rotations: &HashMap<Entity, Quat>,
-    orientations: &DiceOrientations,
-) -> u32 {
+fn read_die_value(reference: &DieRef, rotations: &HashMap<Entity, Quat>, orientations: &DiceOrientations) -> u32 {
     let raw = read_raw_value(reference, rotations, orientations);
     match reference.kind {
         DieKind::D10 if reference.pair_slot.is_none() && raw == 0 => 10,
@@ -349,11 +339,7 @@ fn read_die_value(
     }
 }
 
-fn read_raw_value(
-    reference: &DieRef,
-    rotations: &HashMap<Entity, Quat>,
-    orientations: &DiceOrientations,
-) -> u32 {
+fn read_raw_value(reference: &DieRef, rotations: &HashMap<Entity, Quat>, orientations: &DiceOrientations) -> u32 {
     let Some(rotation) = rotations.get(&reference.entity).copied() else { return 0 };
     let Some(label) = orientations.up_face(reference.kind, rotation) else { return 0 };
     label.parse().unwrap_or(0)

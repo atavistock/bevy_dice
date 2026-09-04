@@ -129,12 +129,7 @@ pub struct DicePhysicsConfig {
 
 impl Default for DicePhysicsConfig {
     fn default() -> Self {
-        Self {
-            restitution: 0.30,
-            friction: 0.8,
-            angular_damping: 1.5,
-            linear_damping: 0.3,
-        }
+        Self { restitution: 0.30, friction: 0.8, angular_damping: 1.5, linear_damping: 0.3 }
     }
 }
 
@@ -201,26 +196,26 @@ pub(super) fn spawn_arena_walls(
         let t = WALL_THICKNESS;
 
         spawn_wall(
-            &mut commands, arena_entity,
+            &mut commands,
+            arena_entity,
             Vec3::new(center.x, center.y - t * 0.5, center.z),
             Vec3::new(arena.size.x, t, arena.size.z),
         );
         for sign in [1.0_f32, -1.0] {
             spawn_wall(
-                &mut commands, arena_entity,
+                &mut commands,
+                arena_entity,
                 Vec3::new(center.x + sign * (half.x + t * 0.5), wall_y, center.z),
                 Vec3::new(t, arena.size.y, arena.size.z),
             );
             spawn_wall(
-                &mut commands, arena_entity,
+                &mut commands,
+                arena_entity,
                 Vec3::new(center.x, wall_y, center.z + sign * (half.z + t * 0.5)),
                 Vec3::new(arena.size.x, arena.size.y, t),
             );
         }
-        spawn_arena_light(
-            &mut commands, arena_entity, center,
-            arena.render_layer.unwrap_or(default_layer.0),
-        );
+        spawn_arena_light(&mut commands, arena_entity, center, arena.render_layer.unwrap_or(default_layer.0));
         // Children only get a `GlobalTransform` when the parent has a `Transform`.
         commands.entity(arena_entity).insert_if_new(Transform::default());
     }
@@ -246,15 +241,10 @@ fn spawn_wall(commands: &mut Commands, arena_entity: Entity, position: Vec3, siz
 fn spawn_arena_light(commands: &mut Commands, arena_entity: Entity, center: Vec3, layer: u8) {
     let light = commands
         .spawn((
-            DirectionalLight {
-                illuminance: 10_000.0,
-                shadow_maps_enabled: true,
-                ..default()
-            },
+            DirectionalLight { illuminance: 10_000.0, shadow_maps_enabled: true, ..default() },
             // Offset on X+Z so the light comes from above-corner; the dice
             // pick up varying shading on each face as they tumble.
-            Transform::from_xyz(center.x + 5.0, center.y + 10.0, center.z + 5.0)
-                .looking_at(center, Vec3::Y),
+            Transform::from_xyz(center.x + 5.0, center.y + 10.0, center.z + 5.0).looking_at(center, Vec3::Y),
             RenderLayers::layer(layer as usize),
         ))
         .id();

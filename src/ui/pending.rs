@@ -11,7 +11,7 @@ use super::diceset::{Diceset, GltfAssetHandles};
 use super::plugin::DiceRenderLayer;
 use super::rng::DiceRng;
 use super::roller::RollRequest;
-use super::spawn::{member_state, spawn_die, throw_base, MAX_DICE_PER_ROLL};
+use super::spawn::{MAX_DICE_PER_ROLL, member_state, spawn_die, throw_base};
 
 pub(super) struct PendingRoll {
     pub arena: Entity,
@@ -83,10 +83,7 @@ fn spawn_roll_dice<R: rand::Rng + ?Sized>(
         for _ in 0..term.count {
             let needed = if term.kind == DieKind::D100 { 2 } else { 1 };
             if spawned + needed > MAX_DICE_PER_ROLL {
-                warn!(
-                    "roll exceeds MAX_DICE_PER_ROLL ({}); remaining dice dropped",
-                    MAX_DICE_PER_ROLL
-                );
+                warn!("roll exceeds MAX_DICE_PER_ROLL ({}); remaining dice dropped", MAX_DICE_PER_ROLL);
                 terms.push(term_refs);
                 return terms;
             }

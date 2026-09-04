@@ -18,8 +18,8 @@ mod spawn;
 
 pub use arena::{DefaultArena, DiceArena, DiceBoxWall, DicePhysicsConfig, SpawnConfig};
 pub use diceset::Diceset;
-pub use orientations::{load_orientations, load_orientations_from_bytes, DiceOrientations};
+pub use orientations::{DiceOrientations, load_orientations, load_orientations_from_bytes};
 pub use plugin::DicePlugin;
 pub use rng::DiceRng;
 pub use roller::{DiceRoller, NoDefaultArena, RollComplete, RollError, RollRequest};
-pub use spawn::{SpawnedDie, MAX_DICE_PER_ROLL};
+pub use spawn::{MAX_DICE_PER_ROLL, SpawnedDie};

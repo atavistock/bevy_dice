@@ -55,11 +55,7 @@ pub fn load_orientations_from_bytes(bytes: &[u8]) -> DiceOrientations {
         warn!("could not parse gltf bytes");
         return DiceOrientations::default();
     };
-    let Some(table) = json
-        .get("extras")
-        .and_then(|e| e.get("dice_orientations"))
-        .and_then(|d| d.as_object())
-    else {
+    let Some(table) = json.get("extras").and_then(|e| e.get("dice_orientations")).and_then(|d| d.as_object()) else {
         return DiceOrientations::default();
     };
     let mut by_kind: HashMap<DieKind, Vec<(String, Vec3)>> = HashMap::new();

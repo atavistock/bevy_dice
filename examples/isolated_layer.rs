@@ -29,10 +29,7 @@ fn main() {
             DefaultPlugins,
             // Disable the auto-spawned default arena: it would land on the
             // plugin's default layer (0), and we want everything on DICE_LAYER.
-            DicePlugin {
-                spawn_default_arena: false,
-                ..default()
-            },
+            DicePlugin { spawn_default_arena: false, ..default() },
         ))
         .add_systems(Startup, setup_scene)
         .add_systems(PostStartup, roll_once)
@@ -53,12 +50,7 @@ fn setup_scene(mut commands: Commands) {
     // The arena pins itself to DICE_LAYER. When `spawn_arena_walls` runs,
     // it also spawns a top-down DirectionalLight on this layer so the dice
     // are lit no matter what the host scene's lighting looks like.
-    commands.spawn((
-        DiceArena::default()
-            .diceset(diceset)
-            .render_layer(DICE_LAYER),
-        DefaultArena,
-    ));
+    commands.spawn((DiceArena::default().diceset(diceset).render_layer(DICE_LAYER), DefaultArena));
 }
 
 /// Roll a single d20 into the default arena.

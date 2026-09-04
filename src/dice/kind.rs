@@ -34,15 +34,8 @@ const DATA: [DieKindData; 7] = [
 
 impl DieKind {
     /// All kinds in canonical order; index matches the gltf primitive order.
-    pub const ALL: [DieKind; 7] = [
-        DieKind::D4,
-        DieKind::D6,
-        DieKind::D8,
-        DieKind::D10,
-        DieKind::D12,
-        DieKind::D20,
-        DieKind::D100,
-    ];
+    pub const ALL: [DieKind; 7] =
+        [DieKind::D4, DieKind::D6, DieKind::D8, DieKind::D10, DieKind::D12, DieKind::D20, DieKind::D100];
 
     fn data(self) -> &'static DieKindData {
         &DATA[self.mesh_index()]

@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use crate::dice::DieKind;
 
-use super::orientations::{load_orientations, load_orientations_from_bytes, DiceOrientations};
+use super::orientations::{DiceOrientations, load_orientations, load_orientations_from_bytes};
 
 /// Single source of truth for embedded dicesets. Each entry is
 /// `(feature_name, gltf_bytes)`; add a row to include a new embedded diceset.
@@ -44,11 +44,10 @@ impl Diceset {
     /// `"halloween"`, `"metal"`, `"clear_orange"`). Panics if the matching
     /// cargo feature isn't enabled.
     pub fn embedded(slug: &str) -> Self {
-        let (name, bytes) = embedded_table()
-            .iter()
-            .find(|(name, _)| *name == slug)
-            .copied()
-            .unwrap_or_else(|| panic!("embedded diceset '{slug}' not available - enable the matching cargo feature"));
+        let (name, bytes) =
+            embedded_table().iter().find(|(name, _)| *name == slug).copied().unwrap_or_else(|| {
+                panic!("embedded diceset '{slug}' not available - enable the matching cargo feature")
+            });
         Diceset {
             asset_path: format!("embedded://bevy_dice/{name}_diceset.glb"),
             orientations: load_orientations_from_bytes(bytes),
@@ -111,15 +110,12 @@ pub(super) fn load_diceset_handles(
         let mut materials = Vec::with_capacity(DieKind::ALL.len());
         for mesh_index in 0..DieKind::ALL.len() {
             meshes.push(asset_server.load(
-                GltfAssetLabel::Primitive { mesh: mesh_index, primitive: 0 }
-                    .from_asset(diceset.asset_path.clone()),
+                GltfAssetLabel::Primitive { mesh: mesh_index, primitive: 0 }.from_asset(diceset.asset_path.clone()),
             ));
             // The bare material label is a `GltfMaterial`; `/std` selects the `StandardMaterial`.
             let material_label =
                 format!("{}/std", GltfAssetLabel::Material { index: mesh_index, is_scale_inverted: false });
-            materials.push(
-                asset_server.load(AssetPath::from(diceset.asset_path.clone()).with_label(material_label)),
-            );
+            materials.push(asset_server.load(AssetPath::from(diceset.asset_path.clone()).with_label(material_label)));
         }
         diceset.handles = Some(GltfAssetHandles { meshes, materials });
     }

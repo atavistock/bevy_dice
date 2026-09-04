@@ -16,7 +16,7 @@ use bevy_dice::ui::{DicePlugin, DiceRoller, RollComplete, RollError, SpawnedDie}
 
 #[path = "common/mod.rs"]
 mod common;
-use common::{drive_text_input, TextInput, TextInputSubmitted};
+use common::{TextInput, TextInputSubmitted, drive_text_input};
 
 // === boilerplate ===
 
@@ -64,10 +64,7 @@ fn setup_ui(mut commands: Commands) {
         .with_children(|root| {
             // The TextInput component turns this Text into an editable
             // input field; common::drive_text_input handles keystrokes.
-            root.spawn((
-                Text::new("> "),
-                TextInput { prompt: "> ".to_string() },
-            ));
+            root.spawn((Text::new("> "), TextInput { prompt: "> ".to_string() }));
             root.spawn((ResultDisplay, Text::new("")));
         });
 }
@@ -98,10 +95,7 @@ fn on_expression_submitted(
 /// When dice settle, the plugin emits a `RollComplete`; we format it via
 /// `outcome.display(&roll)` which already prints a clean
 /// `"3d6(4,2,1) + 2 = 9"`-style breakdown.
-fn show_result(
-    mut events: MessageReader<RollComplete>,
-    mut text: Single<&mut Text, With<ResultDisplay>>,
-) {
+fn show_result(mut events: MessageReader<RollComplete>, mut text: Single<&mut Text, With<ResultDisplay>>) {
     for event in events.read() {
         ***text = event.outcome.display(&event.roll).to_string();
     }

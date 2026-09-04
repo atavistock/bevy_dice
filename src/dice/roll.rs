@@ -134,12 +134,7 @@ impl<'a> fmt::Display for RollOutcomeDisplay<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
         for (term_index, term) in self.roll.terms.iter().enumerate() {
-            let values: Vec<String> = self
-                .outcome
-                .term_dice(term_index)
-                .iter()
-                .map(|d| d.value.to_string())
-                .collect();
+            let values: Vec<String> = self.outcome.term_dice(term_index).iter().map(|d| d.value.to_string()).collect();
             if first {
                 if term.negate {
                     write!(f, "-")?;
@@ -272,8 +267,7 @@ mod tests {
 
     #[test]
     fn term_dice_reflects_keep_modifier() {
-        let roll = DiceRoll::parse("4d6").unwrap()
-            .with_options(Options::default().with_keep_highest(2));
+        let roll = DiceRoll::parse("4d6").unwrap().with_options(Options::default().with_keep_highest(2));
         let outcome = roll.roll_detailed(&mut rng());
         assert_eq!(outcome.term_lengths, vec![2]);
         assert_eq!(outcome.term_dice(0).len(), 2);
@@ -347,9 +341,7 @@ mod tests {
 
     #[test]
     fn with_options_applies_to_all_terms() {
-        let roll = DiceRoll::parse("2d6+1d4")
-            .unwrap()
-            .with_options(Options::default().with_keep_highest(1));
+        let roll = DiceRoll::parse("2d6+1d4").unwrap().with_options(Options::default().with_keep_highest(1));
         assert_eq!(roll.terms[0].options.keep_highest, Some(1));
         assert_eq!(roll.terms[1].options.keep_highest, Some(1));
     }

@@ -10,9 +10,7 @@
 
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
-use bevy_dice::ui::{
-    DiceArena, DicePlugin, DiceRoller, Diceset, RollComplete, SpawnConfig, SpawnedDie,
-};
+use bevy_dice::ui::{DiceArena, DicePlugin, DiceRoller, Diceset, RollComplete, SpawnConfig, SpawnedDie};
 
 #[path = "common/mod.rs"]
 mod common;
@@ -34,10 +32,7 @@ fn main() {
         // applied by then).
         .add_systems(Startup, setup_scene)
         .add_systems(PostStartup, (setup_ui, roll_in_both))
-        .add_systems(
-            Update,
-            (reroll_on_key, update_result_text, draw_arena_borders),
-        )
+        .add_systems(Update, (reroll_on_key, update_result_text, draw_arena_borders))
         .run();
 }
 
@@ -73,11 +68,7 @@ fn setup_scene(mut commands: Commands) {
 
     // Bigger arenas + a punchier throw so the dice cover the whole floor
     // instead of clustering near the entry wall.
-    let throw = SpawnConfig {
-        speed: 16.0,
-        angular_speed_factor: 1.2,
-        ..default()
-    };
+    let throw = SpawnConfig { speed: 16.0, angular_speed_factor: 1.2, ..default() };
 
     let left = commands
         .spawn(
@@ -176,10 +167,7 @@ fn reroll_on_key(
 /// Listens for `RollComplete` messages and updates the matching arena's
 /// text widget. The arena entity carried on the message tells us which
 /// side to update (via `ArenaLabel`).
-fn update_result_text(
-    mut completed: MessageReader<RollComplete>,
-    mut labels: Query<(&ArenaLabel, &mut Text)>,
-) {
+fn update_result_text(mut completed: MessageReader<RollComplete>, mut labels: Query<(&ArenaLabel, &mut Text)>) {
     for event in completed.read() {
         for (label, mut text) in labels.iter_mut() {
             if label.0 == event.arena {
