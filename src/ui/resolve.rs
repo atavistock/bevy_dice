@@ -36,7 +36,7 @@ pub(super) fn prune_orphaned_pending_rolls(
     arenas: Query<(), With<DiceArena>>,
     dice: Query<(), With<SpawnedDie>>,
 ) {
-    pending.0.retain(|roll_id, roll| {
+    pending.rolls.retain(|roll_id, roll| {
         if arenas.get(roll.arena).is_err() {
             warn!("dropping pending roll {} - arena despawned", roll_id);
             return false;
@@ -69,7 +69,7 @@ pub(super) fn resolve_pending_rolls(
 ) {
     let (ready, to_perturb) = detect_settled_rolls(&pending, &sleeping_dice, &arenas, &dicesets);
     perturb_stuck_dice(&mut wake_dice, &to_perturb, &mut *rng);
-    let truly_ready = apply_physics_modifiers(&mut pending, ready, default_layer.0, &mut commands, &mut *rng);
+    let truly_ready = apply_physics_modifiers(&mut pending, ready, default_layer.layer, &mut commands, &mut *rng);
     emit_completed_rolls(&mut pending, truly_ready, &mut completed);
 }
 
@@ -92,7 +92,7 @@ fn detect_settled_rolls<'a>(
     let mut ready = Vec::new();
     let mut to_perturb = Vec::new();
 
-    for (id, roll) in pending.0.iter() {
+    for (id, roll) in pending.rolls.iter() {
         let Ok(arena) = arenas.get(roll.arena) else { continue };
         let Ok(diceset) = dicesets.get(arena.diceset) else { continue };
         let mut all_flat = true;
@@ -157,7 +157,7 @@ fn apply_physics_modifiers<'a, R: rand::Rng + ?Sized>(
 ) -> Vec<ReadyRoll<'a>> {
     let mut truly_ready = Vec::new();
     for ready_roll in ready {
-        let Some(roll) = pending.0.get_mut(&ready_roll.roll_id) else { continue };
+        let Some(roll) = pending.rolls.get_mut(&ready_roll.roll_id) else { continue };
         let Some(handles) = ready_roll.diceset.handles() else { continue };
         let layer = ready_roll.arena.render_layer.unwrap_or(default_layer);
         let modified = trigger_term_modifiers(
@@ -286,7 +286,7 @@ fn emit_completed_rolls(
     completed: &mut MessageWriter<RollComplete>,
 ) {
     for ready_roll in ready {
-        let Some(roll) = pending.0.remove(&ready_roll.roll_id) else { continue };
+        let Some(roll) = pending.rolls.remove(&ready_roll.roll_id) else { continue };
         let outcome = compute_outcome(&roll, &ready_roll.rotations, &ready_roll.diceset.orientations);
         completed.write(RollComplete { roll_id: ready_roll.roll_id, roll: roll.parsed, outcome, arena: roll.arena });
     }

@@ -71,7 +71,9 @@ impl From<NoDefaultArena> for RollError {
 
 /// Monotonic roll-id counter shared by [`DiceRoller`].
 #[derive(Resource, Default)]
-pub(super) struct NextRollId(pub u64);
+pub(super) struct NextRollId {
+    pub value: u64,
+}
 
 /// System param for triggering rolls. [`roll`](Self::roll) targets the
 /// [`DefaultArena`]; [`roll_in`](Self::roll_in) targets a specific arena.
@@ -103,8 +105,8 @@ impl<'w, 's> DiceRoller<'w, 's> {
 
     /// Submits `roll` to `arena`; returns the roll id. Accepts [`DiceRoll`] or `&DiceRoll`.
     pub fn roll_in(&mut self, arena: Entity, roll: impl Into<DiceRoll>) -> u64 {
-        self.next_roll_id.0 = self.next_roll_id.0.wrapping_add(1);
-        let roll_id = self.next_roll_id.0;
+        self.next_roll_id.value = self.next_roll_id.value.wrapping_add(1);
+        let roll_id = self.next_roll_id.value;
         self.writer.write(RollRequest { roll_id, roll: roll.into(), arena });
         roll_id
     }

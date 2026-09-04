@@ -30,8 +30,11 @@ pub(super) struct DieRef {
     pub exploded: bool,
 }
 
+/// Rolls whose dice are still tumbling, keyed by roll id.
 #[derive(Resource, Default)]
-pub(super) struct PendingRolls(pub HashMap<u64, PendingRoll>);
+pub(super) struct PendingRolls {
+    pub rolls: HashMap<u64, PendingRoll>,
+}
 
 pub(super) fn handle_roll_requests(
     mut requests: MessageReader<RollRequest>,
@@ -55,10 +58,10 @@ pub(super) fn handle_roll_requests(
             warn!("RollRequest {} diceset handles not yet loaded", request.roll_id);
             continue;
         };
-        let layer = arena.render_layer.unwrap_or(default_layer.0);
+        let layer = arena.render_layer.unwrap_or(default_layer.layer);
         let terms = spawn_roll_dice(&mut commands, arena, request.arena, &request.roll, handles, layer, &mut *rng);
         let budgets = vec![MAX_OPTION_ITERATIONS; request.roll.terms.len()];
-        pending.0.insert(
+        pending.rolls.insert(
             request.roll_id,
             PendingRoll { arena: request.arena, parsed: request.roll.clone(), terms, budgets },
         );

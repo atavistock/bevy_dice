@@ -48,7 +48,9 @@ const DEFAULT_GRAVITY: f32 = -23.1;
 
 /// Resource holding the active [`DicePlugin::render_layer`] for spawn-time use.
 #[derive(Resource, Clone, Copy)]
-pub(super) struct DiceRenderLayer(pub u8);
+pub(super) struct DiceRenderLayer {
+    pub layer: u8,
+}
 
 impl Plugin for DicePlugin {
     fn build(&self, app: &mut App) {
@@ -66,7 +68,7 @@ impl Plugin for DicePlugin {
         app.init_resource::<PendingRolls>()
             .init_resource::<NextRollId>()
             .init_resource::<DiceRng>()
-            .insert_resource(DiceRenderLayer(render_layer))
+            .insert_resource(DiceRenderLayer { layer: render_layer })
             .add_message::<RollRequest>()
             .add_message::<RollComplete>()
             .register_type::<DiceArena>()

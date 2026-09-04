@@ -48,9 +48,11 @@ struct Arenas {
 }
 
 /// Tag on a UI `Text` so [`update_result_text`] knows which arena the
-/// text widget belongs to (`ArenaLabel(arenas.left)` -> the left-side text).
+/// text widget belongs to (`ArenaLabel { arena: arenas.left }` -> the left-side text).
 #[derive(Component)]
-struct ArenaLabel(Entity);
+struct ArenaLabel {
+    arena: Entity,
+}
 
 /// Spawns the camera, two `Diceset` entities (one per visual style), and
 /// two `DiceArena`s positioned left and right of world origin. Inserts the
@@ -103,7 +105,7 @@ fn setup_ui(mut commands: Commands, arenas: Res<Arenas>) {
 }
 
 /// Spawns a 50%-wide row at the top of the screen with one big centered
-/// `Text` inside, tagged with `ArenaLabel(arena)` so updates can find it.
+/// `Text` inside, tagged with `ArenaLabel { arena }` so updates can find it.
 fn spawn_arena_text(commands: &mut Commands, arena: Entity, left: Val) {
     commands
         .spawn(Node {
@@ -119,7 +121,7 @@ fn spawn_arena_text(commands: &mut Commands, arena: Entity, left: Val) {
                 Text::new("Rolling..."),
                 TextFont { font_size: FontSize::Px(64.0), ..default() },
                 TextColor(Color::WHITE),
-                ArenaLabel(arena),
+                ArenaLabel { arena },
             ));
         });
 }
@@ -170,7 +172,7 @@ fn reroll_on_key(
 fn update_result_text(mut completed: MessageReader<RollComplete>, mut labels: Query<(&ArenaLabel, &mut Text)>) {
     for event in completed.read() {
         for (label, mut text) in labels.iter_mut() {
-            if label.0 == event.arena {
+            if label.arena == event.arena {
                 text.0 = format!("{}", event.outcome.total);
             }
         }

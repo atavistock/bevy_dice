@@ -215,7 +215,7 @@ pub(super) fn spawn_arena_walls(
                 Vec3::new(arena.size.x, arena.size.y, t),
             );
         }
-        spawn_arena_light(&mut commands, arena_entity, center, arena.render_layer.unwrap_or(default_layer.0));
+        spawn_arena_light(&mut commands, arena_entity, center, arena.render_layer.unwrap_or(default_layer.layer));
         // Children only get a `GlobalTransform` when the parent has a `Transform`.
         commands.entity(arena_entity).insert_if_new(Transform::default());
     }
