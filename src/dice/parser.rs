@@ -4,6 +4,9 @@ use crate::dice::kind::DieKind;
 use crate::dice::options::Options;
 use crate::dice::roll::{DiceRoll, DiceTerm};
 
+/// Largest die count a single term may carry (e.g. `1000d6`).
+pub const MAX_DICE_PER_TERM: u32 = 1000;
+
 /// Failures returned by [`DiceRoll::parse`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ParseError {
@@ -13,6 +16,8 @@ pub enum ParseError {
     UnknownDieSides(u32),
     /// A term used a count of zero (e.g. `0d6`).
     ZeroCount,
+    /// A term's die count exceeded [`MAX_DICE_PER_TERM`].
+    CountTooLarge(u32),
     /// A numeric literal or accumulated adjustment did not fit in `u32`/`i32`.
     Overflow,
     /// Generic syntax error at `position` (byte offset) with a short reason.
@@ -25,6 +30,9 @@ impl fmt::Display for ParseError {
             ParseError::Empty => write!(f, "empty dice expression"),
             ParseError::UnknownDieSides(sides) => write!(f, "no die has {sides} sides"),
             ParseError::ZeroCount => write!(f, "die count must be at least 1"),
+            ParseError::CountTooLarge(count) => {
+                write!(f, "die count {count} exceeds the limit of {MAX_DICE_PER_TERM}")
+            }
             ParseError::Overflow => write!(f, "numeric literal too large"),
             ParseError::Malformed { position, reason } => {
                 write!(f, "malformed expression at byte {position}: {reason}")
@@ -37,8 +45,8 @@ impl std::error::Error for ParseError {}
 
 impl DiceRoll {
     /// Parses `NdK` terms and integer adjustments joined by `+`/`-` (e.g.
-    /// `3d6+2`, `1d20-1d4+5`). Count defaults to 1, `d`/`D` both work,
-    /// whitespace is ignored, sides must be 4/6/8/10/12/20/100. A leading
+    /// `3d6+2`, `1d20-1d4+5`). Count defaults to 1 (max [`MAX_DICE_PER_TERM`]),
+    /// `d`/`D` both work, whitespace is ignored, sides must be 4/6/8/10/12/20/100. A leading
     /// `+` or `-` is rejected; write `3d6` rather than `+3d6`.
     ///
     /// ```
@@ -66,10 +74,14 @@ impl DiceRoll {
                     if count == 0 {
                         return Err(ParseError::ZeroCount);
                     }
+                    if count > MAX_DICE_PER_TERM {
+                        return Err(ParseError::CountTooLarge(count));
+                    }
                     terms.push(DiceTerm { count, kind, negate, options: Options::default() });
                 }
                 Token::Number(value) => {
-                    let signed = if negate { -(value as i32) } else { value as i32 };
+                    let magnitude = i32::try_from(value).map_err(|_| ParseError::Overflow)?;
+                    let signed = if negate { -magnitude } else { magnitude };
                     adjustment = adjustment.checked_add(signed).ok_or(ParseError::Overflow)?;
                 }
             }
@@ -243,6 +255,21 @@ mod tests {
     fn rejects_empty_input() {
         assert_eq!(DiceRoll::parse(""), Err(ParseError::Empty));
         assert_eq!(DiceRoll::parse("   "), Err(ParseError::Empty));
+    }
+
+    #[test]
+    fn rejects_adjustment_outside_i32() {
+        assert_eq!(DiceRoll::parse("d6+2147483648"), Err(ParseError::Overflow));
+        assert_eq!(DiceRoll::parse("d6-2147483648"), Err(ParseError::Overflow));
+        assert_eq!(DiceRoll::parse("d6+4294967295"), Err(ParseError::Overflow));
+        assert_eq!(DiceRoll::parse("d6+2147483647").unwrap().adjustment, i32::MAX);
+    }
+
+    #[test]
+    fn rejects_count_over_limit() {
+        assert_eq!(DiceRoll::parse("1001d6"), Err(ParseError::CountTooLarge(1001)));
+        assert_eq!(DiceRoll::parse("4294967295d6"), Err(ParseError::CountTooLarge(u32::MAX)));
+        assert_eq!(DiceRoll::parse("1000d6").unwrap().terms[0].count, 1000);
     }
 
     #[test]

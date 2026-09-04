@@ -26,6 +26,8 @@ pub(super) struct DieRef {
     pub kind: DieKind,
     // Some(0)/Some(1) = d100 tens/ones pair; None = standalone die.
     pub pair_slot: Option<u8>,
+    // Set once this member has spawned an explode die, so it triggers only once.
+    pub exploded: bool,
 }
 
 #[derive(Resource, Default)]
@@ -115,12 +117,12 @@ pub(super) fn spawn_term_member<R: rand::Rng + ?Sized>(
         let tens = spawn_die(commands, handles, DieKind::D100, arena_entity, arena, &tens_state, layer);
         let ones = spawn_die(commands, handles, DieKind::D10, arena_entity, arena, &ones_state, layer);
         vec![
-            DieRef { entity: tens, kind: DieKind::D100, pair_slot: Some(0) },
-            DieRef { entity: ones, kind: DieKind::D10, pair_slot: Some(1) },
+            DieRef { entity: tens, kind: DieKind::D100, pair_slot: Some(0), exploded: false },
+            DieRef { entity: ones, kind: DieKind::D10, pair_slot: Some(1), exploded: false },
         ]
     } else {
         let state = member_state(&base, arena, 0.0, rng);
         let entity = spawn_die(commands, handles, kind, arena_entity, arena, &state, layer);
-        vec![DieRef { entity, kind, pair_slot: None }]
+        vec![DieRef { entity, kind, pair_slot: None, exploded: false }]
     }
 }

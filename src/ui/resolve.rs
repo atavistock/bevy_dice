@@ -208,8 +208,9 @@ fn trigger_term_modifiers<R: rand::Rng + ?Sized>(
                     roll.budgets[term_index] -= 1;
                     modified = true;
                 }
-                Trigger::Explode => {
+                Trigger::Explode(source_index) => {
                     let extra = spawn_term_member(commands, arena, roll.arena, term.kind, handles, layer, rng);
+                    roll.terms[term_index][source_index].exploded = true;
                     roll.terms[term_index].extend(extra);
                     roll.budgets[term_index] -= 1;
                     modified = true;
@@ -224,8 +225,8 @@ fn trigger_term_modifiers<R: rand::Rng + ?Sized>(
 enum Trigger {
     /// Despawn the dice at the given range and respawn one fresh member.
     Reroll(Range<usize>),
-    /// Spawn one extra member for the term.
-    Explode,
+    /// Spawn one extra member for the term; carries the index of the member that triggered.
+    Explode(usize),
 }
 
 fn find_triggers(
@@ -246,8 +247,8 @@ fn find_triggers(
             }
         }
         if let Some(threshold) = options.explode_at_or_above {
-            if value >= threshold {
-                triggers.push(Trigger::Explode);
+            if value >= threshold && !term_refs[index].exploded {
+                triggers.push(Trigger::Explode(index));
             }
         }
         index = range.end;

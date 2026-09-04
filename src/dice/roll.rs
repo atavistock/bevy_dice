@@ -184,8 +184,8 @@ impl DiceRoll {
         for term in &self.terms {
             let mut rolls: Vec<u32> = (0..term.count).map(|_| term.kind.roll(rng)).collect();
             term.options.apply(term.kind, &mut rolls, rng);
-            let term_total: i32 = rolls.iter().map(|&r| r as i32).sum();
-            total += if term.negate { -term_total } else { term_total };
+            let term_total = rolls.iter().fold(0i32, |acc, &value| acc.saturating_add(value as i32));
+            total = total.saturating_add(if term.negate { -term_total } else { term_total });
             term_lengths.push(rolls.len() as u32);
             for value in rolls {
                 dice.push(RolledDie { kind: term.kind, value, negate: term.negate });
