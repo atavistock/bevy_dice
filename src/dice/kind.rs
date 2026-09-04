@@ -16,6 +16,23 @@ pub enum DieKind {
     D100,
 }
 
+/// Per-variant data for [`DieKind`], indexed by declaration order (matches [`DieKind::ALL`]).
+struct DieKindData {
+    sides: u32,
+    asset_name: &'static str,
+    collision_radius: f32,
+}
+
+const DATA: [DieKindData; 7] = [
+    DieKindData { sides: 4, asset_name: "d4", collision_radius: 0.55 },
+    DieKindData { sides: 6, asset_name: "d6", collision_radius: 0.65 },
+    DieKindData { sides: 8, asset_name: "d8", collision_radius: 0.65 },
+    DieKindData { sides: 10, asset_name: "d10", collision_radius: 0.75 },
+    DieKindData { sides: 12, asset_name: "d12", collision_radius: 0.85 },
+    DieKindData { sides: 20, asset_name: "d20", collision_radius: 0.85 },
+    DieKindData { sides: 100, asset_name: "d100", collision_radius: 0.75 },
+];
+
 impl DieKind {
     /// All kinds in canonical order; index matches the gltf primitive order.
     pub const ALL: [DieKind; 7] = [
@@ -28,17 +45,13 @@ impl DieKind {
         DieKind::D100,
     ];
 
+    fn data(self) -> &'static DieKindData {
+        &DATA[self.mesh_index()]
+    }
+
     /// Number of faces on the die.
     pub fn sides(self) -> u32 {
-        match self {
-            DieKind::D4 => 4,
-            DieKind::D6 => 6,
-            DieKind::D8 => 8,
-            DieKind::D10 => 10,
-            DieKind::D12 => 12,
-            DieKind::D20 => 20,
-            DieKind::D100 => 100,
-        }
+        self.data().sides
     }
 
     /// Looks up a kind by face count. Returns `None` for non-standard counts.
@@ -53,28 +66,12 @@ impl DieKind {
 
     /// Index into [`DieKind::ALL`] / the diceset gltf's primitive order.
     pub fn mesh_index(self) -> usize {
-        match self {
-            DieKind::D4 => 0,
-            DieKind::D6 => 1,
-            DieKind::D8 => 2,
-            DieKind::D10 => 3,
-            DieKind::D12 => 4,
-            DieKind::D20 => 5,
-            DieKind::D100 => 6,
-        }
+        self as usize
     }
 
     /// gltf basename, paired with `assets/{diceset}/{asset_name}.gltf`.
     pub fn asset_name(self) -> &'static str {
-        match self {
-            DieKind::D4 => "d4",
-            DieKind::D6 => "d6",
-            DieKind::D8 => "d8",
-            DieKind::D10 => "d10",
-            DieKind::D12 => "d12",
-            DieKind::D20 => "d20",
-            DieKind::D100 => "d100",
-        }
+        self.data().asset_name
     }
 
     /// Uniform roll in `1..=sides()`. D100 returns 1..=100 as one number.
@@ -84,15 +81,7 @@ impl DieKind {
 
     /// Sphere-proxy radius for collision, sized to the polyhedron's visual extent.
     pub fn collision_radius(self) -> f32 {
-        match self {
-            DieKind::D4 => 0.55,
-            DieKind::D6 => 0.65,
-            DieKind::D8 => 0.65,
-            DieKind::D10 => 0.75,
-            DieKind::D12 => 0.85,
-            DieKind::D20 => 0.85,
-            DieKind::D100 => 0.75,
-        }
+        self.data().collision_radius
     }
 }
 
