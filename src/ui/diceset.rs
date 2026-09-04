@@ -1,6 +1,7 @@
 //! [`Diceset`] entity: the gltf asset path, face orientations, and cached
 //! mesh + material handles. Multiple [`super::DiceArena`]s can share one.
 
+use bevy::asset::AssetPath;
 use bevy::prelude::*;
 
 use crate::dice::DieKind;
@@ -113,10 +114,12 @@ pub(super) fn load_diceset_handles(
                 GltfAssetLabel::Primitive { mesh: mesh_index, primitive: 0 }
                     .from_asset(diceset.asset_path.clone()),
             ));
-            materials.push(asset_server.load(
-                GltfAssetLabel::Material { index: mesh_index, is_scale_inverted: false }
-                    .from_asset(diceset.asset_path.clone()),
-            ));
+            // The bare material label is a `GltfMaterial`; `/std` selects the `StandardMaterial`.
+            let material_label =
+                format!("{}/std", GltfAssetLabel::Material { index: mesh_index, is_scale_inverted: false });
+            materials.push(
+                asset_server.load(AssetPath::from(diceset.asset_path.clone()).with_label(material_label)),
+            );
         }
         diceset.handles = Some(GltfAssetHandles { meshes, materials });
     }

@@ -9,7 +9,7 @@
 ## Scenes (not used by this crate, noted for reference)
 
 - **bevy_scene crate renamed to bevy_world_serialization**: `Scene` -> `WorldAsset`, `SceneRoot` -> `WorldAssetRoot`, `DynamicScene` -> `DynamicWorld`, `SceneSpawner` -> `WorldInstanceSpawner`.
-- **gltf material sub-assets**: Now load as `GltfMaterial` by default instead of `StandardMaterial`; use a `/std` label suffix to get `StandardMaterial` when the `bevy_pbr` feature is enabled. This crate loads materials via `GltfAssetLabel::Material`, which still resolves fine.
+- **gltf material sub-assets**: Now load as `GltfMaterial` by default instead of `StandardMaterial`; use a `/std` label suffix to get `StandardMaterial` when the `bevy_pbr` feature is enabled. This crate appends `/std` to `GltfAssetLabel::Material` when loading die materials.
 
 ## Notes
 

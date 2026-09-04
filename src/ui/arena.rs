@@ -228,7 +228,11 @@ pub(super) fn spawn_arena_walls(
             &mut commands, arena_entity, center,
             arena.render_layer.unwrap_or(default_layer.0),
         );
-        commands.entity(arena_entity).insert(ArenaWallsSpawned);
+        // Children only get a `GlobalTransform` when the parent has a `Transform`.
+        commands
+            .entity(arena_entity)
+            .insert_if_new(Transform::default())
+            .insert(ArenaWallsSpawned);
     }
 }
 
