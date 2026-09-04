@@ -19,11 +19,31 @@ pub struct DiceTerm {
     pub options: Options,
 }
 
-/// Renders as `"+3d6"` / `"-1d4"`; the leading sign is always present.
+impl DiceTerm {
+    /// Writes `NdK` plus option suffixes (`kh2`, `kl1`, `r1`, `e6`) without a sign.
+    fn fmt_unsigned(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}d{}", self.count, self.kind.sides())?;
+        if let Some(count) = self.options.keep_highest {
+            write!(f, "kh{count}")?;
+        }
+        if let Some(count) = self.options.keep_lowest {
+            write!(f, "kl{count}")?;
+        }
+        if let Some(threshold) = self.options.reroll_at_or_below {
+            write!(f, "r{threshold}")?;
+        }
+        if let Some(threshold) = self.options.explode_at_or_above {
+            write!(f, "e{threshold}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Renders as `"+3d6"` / `"-1d4"` / `"+4d6kh3"`; the leading sign is always present.
 impl fmt::Display for DiceTerm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let sign = if self.negate { '-' } else { '+' };
-        write!(f, "{sign}{}d{}", self.count, self.kind.sides())
+        write!(f, "{}", if self.negate { '-' } else { '+' })?;
+        self.fmt_unsigned(f)
     }
 }
 
@@ -39,6 +59,29 @@ pub struct DiceRoll {
 impl From<&DiceRoll> for DiceRoll {
     fn from(roll: &DiceRoll) -> Self {
         roll.clone()
+    }
+}
+
+/// Renders as `"3d6+2"` / `"1d20-1d4+5"` / `"2d20kh1+5"`; no sign on the first term.
+impl fmt::Display for DiceRoll {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, term) in self.terms.iter().enumerate() {
+            if index == 0 {
+                if term.negate {
+                    write!(f, "-")?;
+                }
+                term.fmt_unsigned(f)?;
+            } else {
+                write!(f, "{term}")?;
+            }
+        }
+        if self.terms.is_empty() {
+            write!(f, "{}", self.adjustment)
+        } else if self.adjustment != 0 {
+            write!(f, "{:+}", self.adjustment)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -146,27 +189,18 @@ impl DiceRoll {
     }
 
     /// `2d20` keep-highest plus `modifier`. Standard 5e advantage roll.
-    pub fn with_advantage(modifier: i32) -> Self {
-        DiceRoll {
-            terms: vec![DiceTerm {
-                count: 2,
-                kind: DieKind::D20,
-                negate: false,
-                options: Options::default().with_keep_highest(1),
-            }],
-            adjustment: modifier,
-        }
+    pub fn advantage(modifier: i32) -> Self {
+        Self::two_d20(Options::default().with_keep_highest(1), modifier)
     }
 
     /// `2d20` keep-lowest plus `modifier`. Standard 5e disadvantage roll.
-    pub fn with_disadvantage(modifier: i32) -> Self {
+    pub fn disadvantage(modifier: i32) -> Self {
+        Self::two_d20(Options::default().with_keep_lowest(1), modifier)
+    }
+
+    fn two_d20(options: Options, modifier: i32) -> Self {
         DiceRoll {
-            terms: vec![DiceTerm {
-                count: 2,
-                kind: DieKind::D20,
-                negate: false,
-                options: Options::default().with_keep_lowest(1),
-            }],
+            terms: vec![DiceTerm { count: 2, kind: DieKind::D20, negate: false, options }],
             adjustment: modifier,
         }
     }
@@ -281,6 +315,27 @@ mod tests {
     fn display_negative_term() {
         let term = DiceTerm { count: 1, kind: DieKind::D4, negate: true, options: Options::default() };
         assert_eq!(term.to_string(), "-1d4");
+    }
+
+    #[test]
+    fn display_term_includes_options() {
+        let options = Options::default().with_keep_highest(2).with_reroll_at_or_below(1).with_explode_at_or_above(6);
+        let term = DiceTerm { count: 4, kind: DieKind::D6, negate: false, options };
+        assert_eq!(term.to_string(), "+4d6kh2r1e6");
+    }
+
+    #[test]
+    fn display_roll_round_trips_parser_input() {
+        for input in ["1d20", "3d6+2", "1d20-1d4+5", "2d6-3"] {
+            assert_eq!(DiceRoll::parse(input).unwrap().to_string(), input);
+        }
+    }
+
+    #[test]
+    fn display_roll_with_options_and_adjustment_only() {
+        assert_eq!(DiceRoll::advantage(5).to_string(), "2d20kh1+5");
+        assert_eq!(DiceRoll::disadvantage(-2).to_string(), "2d20kl1-2");
+        assert_eq!(DiceRoll { terms: vec![], adjustment: 7 }.to_string(), "7");
     }
 
     #[test]

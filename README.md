@@ -193,7 +193,7 @@ let roll = DiceRoll::parse("4d6").unwrap()
   extra die (same cap).
 
 `DiceRoll::with_explode()` and `with_reroll_ones()` are shorthands.
-`DiceRoll::with_advantage(modifier)` / `with_disadvantage(modifier)` build a
+`DiceRoll::advantage(modifier)` / `disadvantage(modifier)` build a
 standard 5e `2d20kh1` / `2d20kl1` roll plus the modifier.
 
 In the physics path, reroll and explode are re-simulated: a die that lands

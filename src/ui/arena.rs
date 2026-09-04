@@ -105,18 +105,11 @@ impl DiceArena {
 #[reflect(Component)]
 pub struct DefaultArena;
 
-/// Marker for the static walls and floor of an arena, parented under the
-/// arena entity itself. Field references the owning arena for queries that
-/// need to filter walls by arena.
+/// Marker for the static walls and floor of an arena; the owning arena is the
+/// `ChildOf` parent.
 #[derive(Component, Reflect)]
 #[reflect(Component)]
-pub struct DiceBoxWall {
-    pub arena: Entity,
-}
-
-/// Internal marker for arenas whose walls have already been spawned.
-#[derive(Component)]
-pub(super) struct ArenaWallsSpawned;
+pub struct DiceBoxWall;
 
 // === tunables ===
 
@@ -195,10 +188,10 @@ impl Default for SpawnConfig {
 // === wall + light spawning ===
 
 /// Spawns the floor + four walls + overhead light under each newly-added
-/// [`DiceArena`] entity, then tags it with [`ArenaWallsSpawned`].
+/// [`DiceArena`] entity.
 pub(super) fn spawn_arena_walls(
     mut commands: Commands,
-    new_arenas: Query<(Entity, &DiceArena), (Added<DiceArena>, Without<ArenaWallsSpawned>)>,
+    new_arenas: Query<(Entity, &DiceArena), Added<DiceArena>>,
     default_layer: Res<DiceRenderLayer>,
 ) {
     for (arena_entity, arena) in new_arenas.iter() {
@@ -229,10 +222,7 @@ pub(super) fn spawn_arena_walls(
             arena.render_layer.unwrap_or(default_layer.0),
         );
         // Children only get a `GlobalTransform` when the parent has a `Transform`.
-        commands
-            .entity(arena_entity)
-            .insert_if_new(Transform::default())
-            .insert(ArenaWallsSpawned);
+        commands.entity(arena_entity).insert_if_new(Transform::default());
     }
 }
 
@@ -240,7 +230,7 @@ pub(super) fn spawn_arena_walls(
 fn spawn_wall(commands: &mut Commands, arena_entity: Entity, position: Vec3, size: Vec3) {
     let wall = commands
         .spawn((
-            DiceBoxWall { arena: arena_entity },
+            DiceBoxWall,
             RigidBody::Static,
             Collider::cuboid(size.x, size.y, size.z),
             Transform::from_translation(position),

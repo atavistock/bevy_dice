@@ -69,20 +69,26 @@ pub(super) fn resolve_pending_rolls(
 ) {
     let (ready, to_perturb) = detect_settled_rolls(&pending, &sleeping_dice, &arenas, &dicesets);
     perturb_stuck_dice(&mut wake_dice, &to_perturb, &mut *rng);
-    let truly_ready = apply_physics_modifiers(
-        &mut pending, ready, &arenas, &dicesets, default_layer.0, &mut commands, &mut *rng,
-    );
-    emit_completed_rolls(&mut pending, truly_ready, &arenas, &dicesets, &mut completed);
+    let truly_ready = apply_physics_modifiers(&mut pending, ready, default_layer.0, &mut commands, &mut *rng);
+    emit_completed_rolls(&mut pending, truly_ready, &mut completed);
+}
+
+/// A pending roll whose dice have all settled flat, with its arena and diceset resolved.
+struct ReadyRoll<'a> {
+    roll_id: u64,
+    arena: &'a DiceArena,
+    diceset: &'a Diceset,
+    rotations: HashMap<Entity, Quat>,
 }
 
 /// Scans `pending` for rolls whose dice have all settled flat. Returns
 /// `(ready_rolls, stuck_dice_to_perturb)`. Read-only.
-fn detect_settled_rolls(
+fn detect_settled_rolls<'a>(
     pending: &PendingRolls,
     sleeping_dice: &Query<(&SpawnedDie, &Transform), With<Sleeping>>,
-    arenas: &Query<&DiceArena>,
-    dicesets: &Query<&Diceset>,
-) -> (Vec<(u64, HashMap<Entity, Quat>)>, Vec<Entity>) {
+    arenas: &'a Query<&DiceArena>,
+    dicesets: &'a Query<&Diceset>,
+) -> (Vec<ReadyRoll<'a>>, Vec<Entity>) {
     let mut ready = Vec::new();
     let mut to_perturb = Vec::new();
 
@@ -113,7 +119,7 @@ fn detect_settled_rolls(
         }
 
         if all_flat {
-            ready.push((*id, rotations));
+            ready.push(ReadyRoll { roll_id: *id, arena, diceset, rotations });
         } else {
             to_perturb.extend(roll_perturbs);
         }
@@ -145,25 +151,23 @@ fn perturb_stuck_dice<R: rand::Rng + ?Sized>(
 /// For each settled-flat roll, applies reroll/explode by despawning + spawning
 /// fresh dice. Returns the roll ids that need no further dice (ready to emit).
 /// Rolls that still have pending modifications stay in `pending` for the next frame.
-fn apply_physics_modifiers<R: rand::Rng + ?Sized>(
+fn apply_physics_modifiers<'a, R: rand::Rng + ?Sized>(
     pending: &mut PendingRolls,
-    ready: Vec<(u64, HashMap<Entity, Quat>)>,
-    arenas: &Query<&DiceArena>,
-    dicesets: &Query<&Diceset>,
+    ready: Vec<ReadyRoll<'a>>,
     default_layer: u8,
     commands: &mut Commands,
     rng: &mut R,
-) -> Vec<(u64, HashMap<Entity, Quat>)> {
+) -> Vec<ReadyRoll<'a>> {
     let mut truly_ready = Vec::new();
-    for (roll_id, rotations) in ready {
-        let Some(roll) = pending.0.get_mut(&roll_id) else { continue };
-        let Ok(arena) = arenas.get(roll.arena) else { continue };
-        let Ok(diceset) = dicesets.get(arena.diceset) else { continue };
-        let Some(handles) = diceset.handles() else { continue };
-        let layer = arena.render_layer.unwrap_or(default_layer);
-        let modified = trigger_term_modifiers(roll, arena, diceset, handles, layer, &rotations, commands, rng);
+    for ready_roll in ready {
+        let Some(roll) = pending.0.get_mut(&ready_roll.roll_id) else { continue };
+        let Some(handles) = ready_roll.diceset.handles() else { continue };
+        let layer = ready_roll.arena.render_layer.unwrap_or(default_layer);
+        let modified = trigger_term_modifiers(
+            roll, ready_roll.arena, ready_roll.diceset, handles, layer, &ready_roll.rotations, commands, rng,
+        );
         if !modified {
-            truly_ready.push((roll_id, rotations));
+            truly_ready.push(ready_roll);
         }
     }
     truly_ready
@@ -279,18 +283,14 @@ fn read_member_value(
 /// [`RollComplete`] message.
 fn emit_completed_rolls(
     pending: &mut PendingRolls,
-    ready: Vec<(u64, HashMap<Entity, Quat>)>,
-    arenas: &Query<&DiceArena>,
-    dicesets: &Query<&Diceset>,
+    ready: Vec<ReadyRoll<'_>>,
     completed: &mut MessageWriter<RollComplete>,
 ) {
-    for (roll_id, rotations) in ready {
-        let Some(roll) = pending.0.remove(&roll_id) else { continue };
-        let Ok(arena) = arenas.get(roll.arena) else { continue };
-        let Ok(diceset) = dicesets.get(arena.diceset) else { continue };
-        let outcome = compute_outcome(&roll, &rotations, &diceset.orientations);
+    for ready_roll in ready {
+        let Some(roll) = pending.0.remove(&ready_roll.roll_id) else { continue };
+        let outcome = compute_outcome(&roll, &ready_roll.rotations, &ready_roll.diceset.orientations);
         completed.write(RollComplete {
-            roll_id,
+            roll_id: ready_roll.roll_id,
             roll: roll.parsed,
             outcome,
             arena: roll.arena,

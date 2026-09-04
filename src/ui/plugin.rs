@@ -14,7 +14,7 @@ use super::rng::DiceRng;
 use super::spawn::SpawnedDie;
 use super::roller::{NextRollId, RollComplete, RollRequest};
 
-/// Adds avian3d physics + picking, the roll request/complete messages, the
+/// Adds avian3d physics, the roll request/complete messages, the
 /// tumble/settle/emit pipeline, and an overhead [`DirectionalLight`] for the
 /// dice. With an embedded diceset feature enabled, auto-spawns a [`DiceArena`]
 /// tagged [`DefaultArena`] unless
@@ -56,7 +56,7 @@ impl Plugin for DicePlugin {
 
         let gravity = self.gravity;
         let render_layer = self.render_layer;
-        app.add_plugins((PhysicsPlugins::default(), PhysicsPickingPlugin))
+        app.add_plugins(PhysicsPlugins::default())
             .init_resource::<PendingRolls>()
             .init_resource::<NextRollId>()
             .init_resource::<DiceRng>()

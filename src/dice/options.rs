@@ -73,88 +73,81 @@ impl Options {
         Ok(())
     }
 
+    /// What a die showing `value` asks for; reroll wins over explode, and a die explodes once.
+    /// Thresholds outside the die's range never trigger.
+    pub fn modifier_for(&self, kind: DieKind, value: u32, exploded: bool) -> Option<Modifier> {
+        if let Some(threshold) = self.reroll_at_or_below
+            && threshold < kind.sides()
+            && value <= threshold
+        {
+            return Some(Modifier::Reroll);
+        }
+        if let Some(threshold) = self.explode_at_or_above
+            && threshold <= kind.sides()
+            && !exploded
+            && value >= threshold
+        {
+            return Some(Modifier::Explode);
+        }
+        None
+    }
+
     /// Runs reroll + explode (sharing one [`MAX_OPTION_ITERATIONS`] budget) then keep.
+    /// Exploded dice are checked too, so the physics path yields the same distribution.
     pub fn apply<R: Rng + ?Sized>(&self, kind: DieKind, rolls: &mut Vec<u32>, rng: &mut R) {
         let mut budget = MAX_OPTION_ITERATIONS;
-        self.apply_reroll(kind, rolls, rng, &mut budget);
-        self.apply_explode(kind, rolls, rng, &mut budget);
+        let mut idx = 0;
+        while idx < rolls.len() {
+            let mut exploded = false;
+            while budget > 0 {
+                match self.modifier_for(kind, rolls[idx], exploded) {
+                    Some(Modifier::Reroll) => rolls[idx] = kind.roll(rng),
+                    Some(Modifier::Explode) => {
+                        rolls.push(kind.roll(rng));
+                        exploded = true;
+                    }
+                    None => break,
+                }
+                budget -= 1;
+            }
+            idx += 1;
+        }
         self.apply_keep(rolls);
     }
 
     /// RNG-free trim of `rolls` in place; the physics layer reuses this.
     pub fn apply_keep(&self, rolls: &mut Vec<u32>) {
-        self.apply_keep_highest(rolls);
-        self.apply_keep_lowest(rolls);
-    }
-
-    fn apply_reroll<R: Rng + ?Sized>(
-        &self,
-        kind: DieKind,
-        rolls: &mut Vec<u32>,
-        rng: &mut R,
-        budget: &mut u32,
-    ) {
-        let Some(threshold) = self.reroll_at_or_below else {
-            return;
-        };
-        if threshold >= kind.sides() {
-            return;
+        if let Some(count) = self.keep_highest {
+            keep(rolls, count, true);
         }
-        for roll in rolls.iter_mut() {
-            while *roll <= threshold && *budget > 0 {
-                *roll = kind.roll(rng);
-                *budget -= 1;
-            }
+        if let Some(count) = self.keep_lowest {
+            keep(rolls, count, false);
         }
     }
 
-    fn apply_explode<R: Rng + ?Sized>(
-        &self,
-        kind: DieKind,
-        rolls: &mut Vec<u32>,
-        rng: &mut R,
-        budget: &mut u32,
-    ) {
-        let Some(threshold) = self.explode_at_or_above else {
-            return;
-        };
-        if threshold > kind.sides() {
-            return;
-        }
-        let mut idx = 0;
-        while idx < rolls.len() {
-            if rolls[idx] >= threshold && *budget > 0 {
-                let extra = kind.roll(rng);
-                rolls.push(extra);
-                *budget -= 1;
-            }
-            idx += 1;
-        }
-    }
+}
 
-    fn apply_keep_highest(&self, rolls: &mut Vec<u32>) {
-        let Some(count) = self.keep_highest else {
-            return;
-        };
-        let count = count as usize;
-        if count >= rolls.len() {
-            return;
-        }
+/// Action a settled die value requests under [`Options::modifier_for`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Modifier {
+    /// Replace the die with a fresh roll.
+    Reroll,
+    /// Add one extra die to the term.
+    Explode,
+}
+
+/// Sorts `rolls` (descending when `highest`) and truncates to `count`.
+fn keep(rolls: &mut Vec<u32>, count: u32, highest: bool) {
+    let count = count as usize;
+    if count >= rolls.len() {
+        return;
+    }
+    if highest {
         rolls.sort_unstable_by(|a, b| b.cmp(a));
-        rolls.truncate(count);
-    }
-
-    fn apply_keep_lowest(&self, rolls: &mut Vec<u32>) {
-        let Some(count) = self.keep_lowest else {
-            return;
-        };
-        let count = count as usize;
-        if count >= rolls.len() {
-            return;
-        }
+    } else {
         rolls.sort_unstable();
-        rolls.truncate(count);
     }
+    rolls.truncate(count);
 }
 
 #[cfg(test)]
@@ -228,6 +221,28 @@ mod tests {
             .with_explode_at_or_above(6)
             .apply(DieKind::D6, &mut rolls, &mut rng());
         assert!(rolls.len() >= before + 2);
+    }
+
+    #[test]
+    fn reroll_also_applies_to_exploded_dice() {
+        let mut rolls = vec![6, 6, 6, 6];
+        Options::default()
+            .with_reroll_at_or_below(3)
+            .with_explode_at_or_above(6)
+            .apply(DieKind::D6, &mut rolls, &mut rng());
+        assert!(rolls.len() > 4);
+        assert!(rolls.iter().all(|&r| r > 3), "{rolls:?}");
+    }
+
+    #[test]
+    fn modifier_for_prefers_reroll_and_explodes_once() {
+        let options = Options::default().with_reroll_at_or_below(6).with_explode_at_or_above(5);
+        assert_eq!(options.modifier_for(DieKind::D6, 6, false), Some(Modifier::Reroll));
+        assert_eq!(options.modifier_for(DieKind::D6, 6, true), Some(Modifier::Reroll));
+        let options = Options::default().with_explode_at_or_above(5);
+        assert_eq!(options.modifier_for(DieKind::D6, 5, false), Some(Modifier::Explode));
+        assert_eq!(options.modifier_for(DieKind::D6, 5, true), None);
+        assert_eq!(options.modifier_for(DieKind::D4, 4, false), None);
     }
 
     #[test]

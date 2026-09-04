@@ -20,17 +20,16 @@ pub enum DieKind {
 struct DieKindData {
     sides: u32,
     asset_name: &'static str,
-    collision_radius: f32,
 }
 
 const DATA: [DieKindData; 7] = [
-    DieKindData { sides: 4, asset_name: "d4", collision_radius: 0.55 },
-    DieKindData { sides: 6, asset_name: "d6", collision_radius: 0.65 },
-    DieKindData { sides: 8, asset_name: "d8", collision_radius: 0.65 },
-    DieKindData { sides: 10, asset_name: "d10", collision_radius: 0.75 },
-    DieKindData { sides: 12, asset_name: "d12", collision_radius: 0.85 },
-    DieKindData { sides: 20, asset_name: "d20", collision_radius: 0.85 },
-    DieKindData { sides: 100, asset_name: "d100", collision_radius: 0.75 },
+    DieKindData { sides: 4, asset_name: "d4" },
+    DieKindData { sides: 6, asset_name: "d6" },
+    DieKindData { sides: 8, asset_name: "d8" },
+    DieKindData { sides: 10, asset_name: "d10" },
+    DieKindData { sides: 12, asset_name: "d12" },
+    DieKindData { sides: 20, asset_name: "d20" },
+    DieKindData { sides: 100, asset_name: "d100" },
 ];
 
 impl DieKind {
@@ -77,11 +76,6 @@ impl DieKind {
     /// Uniform roll in `1..=sides()`. D100 returns 1..=100 as one number.
     pub fn roll<R: Rng + ?Sized>(self, rng: &mut R) -> u32 {
         rng.gen_range(1..=self.sides())
-    }
-
-    /// Sphere-proxy radius for collision, sized to the polyhedron's visual extent.
-    pub fn collision_radius(self) -> f32 {
-        self.data().collision_radius
     }
 }
 
