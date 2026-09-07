@@ -17,7 +17,7 @@ arena, watch the dice tumble and settle, read the result.
 ```toml
 [dependencies]
 bevy = "0.18"
-bevy_dice = { version = "0.2", features = ["plain_white"] }
+bevy_dice = { version = "0.3", features = ["plain_white"] }
 ```
 
 The diceset features ship a `.glb` baked into the binary so you do not have
