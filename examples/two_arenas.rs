@@ -152,8 +152,7 @@ fn reroll_on_key(
         return;
     }
 
-    // Despawn every die in the world. The plugin's orphan-cleanup system
-    // also prunes the matching PendingRolls if any were in flight.
+    // Clear the previous dice; removing an active die interrupts its playback.
     for entity in dice.iter() {
         commands.entity(entity).despawn();
     }

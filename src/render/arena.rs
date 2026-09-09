@@ -2,16 +2,12 @@
 //! references a [`super::Diceset`] entity by [`Entity`], plus its own
 //! physics and throw tuning.
 
-use avian3d::prelude::*;
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 
 use super::plugin::DiceRenderLayer;
 
 use crate::sim::{DicePhysicsConfig, SimulationArena, SpawnConfig};
-
-/// Thickness of the static wall/floor colliders that contain the dice.
-const WALL_THICKNESS: f32 = 0.5;
 
 /// A playing area; spawn one per concurrent dice region. Tag with
 /// [`DefaultArena`] to make it the target of [`super::DiceRoller::roll`].
@@ -113,70 +109,20 @@ impl DiceArena {
 #[reflect(Component)]
 pub struct DefaultArena;
 
-/// Marker for the static walls and floor of an arena; the owning arena is the
-/// `ChildOf` parent.
-#[derive(Component, Reflect)]
-#[reflect(Component)]
-pub struct DiceBoxWall;
-
-// === wall + light spawning ===
-
-/// Spawns the floor + four walls + overhead light under each newly-added
-/// [`DiceArena`] entity.
-pub(super) fn spawn_arena_walls(
+/// Spawns an overhead light for each newly added arena.
+pub fn spawn_arena_lights(
     mut commands: Commands,
     new_arenas: Query<(Entity, &DiceArena), Added<DiceArena>>,
     default_layer: Res<DiceRenderLayer>,
 ) {
     for (arena_entity, arena) in new_arenas.iter() {
-        let center = arena.center;
-        let half = arena.size * 0.5;
-        let wall_y = center.y + half.y;
-        let t = WALL_THICKNESS;
-
-        spawn_wall(
-            &mut commands,
-            arena_entity,
-            Vec3::new(center.x, center.y - t * 0.5, center.z),
-            Vec3::new(arena.size.x, t, arena.size.z),
-        );
-        for sign in [1.0_f32, -1.0] {
-            spawn_wall(
-                &mut commands,
-                arena_entity,
-                Vec3::new(center.x + sign * (half.x + t * 0.5), wall_y, center.z),
-                Vec3::new(t, arena.size.y, arena.size.z),
-            );
-            spawn_wall(
-                &mut commands,
-                arena_entity,
-                Vec3::new(center.x, wall_y, center.z + sign * (half.z + t * 0.5)),
-                Vec3::new(arena.size.x, arena.size.y, t),
-            );
-        }
-        spawn_arena_light(&mut commands, arena_entity, center, arena.render_layer.unwrap_or(default_layer.layer));
-        // Children only get a `GlobalTransform` when the parent has a `Transform`.
+        spawn_arena_light(&mut commands, arena_entity, arena.center, arena.render_layer.unwrap_or(default_layer.layer));
+        // Child lights require a parent transform for propagation.
         commands.entity(arena_entity).insert_if_new(Transform::default());
     }
 }
 
-/// Spawns one static collider as a child of `arena_entity`.
-fn spawn_wall(commands: &mut Commands, arena_entity: Entity, position: Vec3, size: Vec3) {
-    let wall = commands
-        .spawn((
-            DiceBoxWall,
-            RigidBody::Static,
-            Collider::cuboid(size.x, size.y, size.z),
-            Transform::from_translation(position),
-        ))
-        .id();
-    commands.entity(arena_entity).add_child(wall);
-}
-
-/// Spawns an overhead directional light on `layer`, parented to the arena.
-/// The light is angled ~30deg off vertical with shadows on so the die's
-/// polyhedral facets read clearly from above (a purely vertical light
-/// would flatten the top face into a featureless silhouette).
+/// Spawns an angled overhead light on the arena's render layer.
 fn spawn_arena_light(commands: &mut Commands, arena_entity: Entity, center: Vec3, layer: u8) {
     let light = commands
         .spawn((

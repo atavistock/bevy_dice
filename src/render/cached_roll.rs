@@ -9,8 +9,8 @@ use crate::dice::{DiceRoll, DieKind, MAX_OPTION_ITERATIONS, RollOutcome};
 use crate::sim::MAX_DICE_PER_ROLL;
 
 /// Requests a cached throw, optionally with externally supplied final faces.
-#[derive(Message, Clone)]
-pub struct CachedRollRequest {
+#[derive(Message, Clone, Reflect)]
+pub struct RollRequest {
     pub roll_id: u64,
     pub roll: DiceRoll,
     pub arena: Entity,
@@ -72,6 +72,7 @@ impl std::error::Error for RollFailure {
 /// Invalid expression settings or externally supplied outcome data.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutcomeError {
+    NoDice,
     InvalidOptions,
     TermCount,
     DiceCount,
@@ -85,6 +86,7 @@ pub enum OutcomeError {
 impl fmt::Display for OutcomeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::NoDice => "expression must contain at least one dice term",
             Self::InvalidOptions => "invalid dice options",
             Self::TermCount => "outcome term count does not match the expression",
             Self::DiceCount => "outcome dice count does not match its terms",
@@ -101,6 +103,9 @@ impl std::error::Error for OutcomeError {}
 
 /// Validates expression options and its initial physical body count.
 pub fn validate_roll(roll: &DiceRoll) -> Result<(), OutcomeError> {
+    if roll.terms.is_empty() {
+        return Err(OutcomeError::NoDice);
+    }
     let mut body_count = 0u64;
     for term in roll.terms.iter() {
         term.options.validate_for(term.kind).map_err(|_| OutcomeError::InvalidOptions)?;
@@ -113,6 +118,26 @@ pub fn validate_roll(roll: &DiceRoll) -> Result<(), OutcomeError> {
         }
     }
     Ok(())
+}
+
+/// Canonical base composition after keep modifiers, excluding additional explosions.
+pub fn base_composition(roll: &DiceRoll) -> Result<Vec<DieKind>, OutcomeError> {
+    validate_roll(roll)?;
+    let mut kinds = Vec::new();
+    for term in roll.terms.iter() {
+        let mut count = term.count;
+        for limit in [term.options.keep_highest, term.options.keep_lowest].into_iter().flatten() {
+            count = count.min(limit);
+        }
+        for _ in 0..count {
+            kinds.push(term.kind);
+            if term.kind == DieKind::D100 {
+                kinds.push(DieKind::D10);
+            }
+        }
+    }
+    kinds.sort_by_key(|kind| kind.mesh_index());
+    Ok(kinds)
 }
 
 /// Validates untrusted final dice without indexing through unchecked term lengths.
@@ -269,5 +294,15 @@ mod tests {
             .expect("valid expression")
             .with_options(Options::default().with_reroll_at_or_below(6));
         assert_eq!(validate_roll(&roll), Err(OutcomeError::InvalidOptions));
+    }
+    #[test]
+    fn constant_only_requests_and_warming_are_rejected() {
+        for adjustment in [0, 5, -5] {
+            let roll = DiceRoll { terms: vec![], adjustment };
+            let outcome = RollOutcome { total: adjustment, dice: vec![], term_lengths: vec![] };
+            assert_eq!(validate_roll(&roll), Err(OutcomeError::NoDice));
+            assert_eq!(base_composition(&roll), Err(OutcomeError::NoDice));
+            assert_eq!(validate_outcome(&roll, &outcome), Err(OutcomeError::NoDice));
+        }
     }
 }

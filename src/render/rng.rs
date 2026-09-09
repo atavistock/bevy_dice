@@ -1,13 +1,10 @@
-//! [`DiceRng`] resource. Physics systems pull randomness from here so tests
-//! can install a seeded RNG for deterministic playback.
+//! Independent random streams for gameplay outcomes and simulated throws.
 
 use bevy::prelude::*;
 use rand::rngs::StdRng;
 use rand::{RngCore, SeedableRng};
 
-/// Resource owning the RNG used by every physics system (throw arc, stuck-die
-/// perturb, reroll/explode replacements). Replace with [`DiceRng::from_seed`]
-/// in tests to make rolls reproducible.
+/// Random stream used only to generate gameplay outcomes.
 #[derive(Resource)]
 pub struct DiceRng {
     inner: Box<dyn RngCore + Send + Sync>,
@@ -46,5 +43,28 @@ impl RngCore for DiceRng {
 
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
         self.inner.try_fill_bytes(dest)
+    }
+}
+
+/// Independent random stream used only for background simulation seeds.
+#[derive(Resource)]
+pub struct DiceSimulationRng {
+    inner: StdRng,
+}
+
+impl DiceSimulationRng {
+    /// Seeds simulated trajectories without changing gameplay outcomes.
+    pub fn from_seed(seed: u64) -> Self {
+        Self { inner: StdRng::seed_from_u64(seed) }
+    }
+
+    pub fn next_seed(&mut self) -> u64 {
+        self.inner.next_u64()
+    }
+}
+
+impl Default for DiceSimulationRng {
+    fn default() -> Self {
+        Self { inner: StdRng::from_entropy() }
     }
 }

@@ -1,8 +1,11 @@
 //! Asset snapshots and validated geometry for background trajectory preparation.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, OnceLock, Weak},
+};
 
-use avian3d::prelude::{Collider, Gravity};
+use avian3d::prelude::Collider;
 use bevy::{
     asset::{AssetId, LoadState, RecursiveDependencyLoadState, UntypedAssetId},
     mesh::VertexAttributeValues,
@@ -33,7 +36,7 @@ pub struct SimulationTemplate {
     pub arena: DiceArena,
     pub kinds: Vec<DieKind>,
     pub gravity: Vec3,
-    pub vertices: Vec<Vec<Vec3>>,
+    pub geometry: Vec<Arc<SharedGeometry>>,
     pub orientations: DiceOrientations,
     pub stamp: ArenaStamp,
 }
@@ -42,6 +45,48 @@ pub struct SimulationTemplate {
 pub struct PreparedGeometry {
     pub colliders: Vec<Collider>,
     pub symmetries: Vec<Arc<FaceSymmetries>>,
+}
+
+/// Immutable mesh data with lazily prepared collision and face geometry.
+pub struct SharedGeometry {
+    vertices: Box<[Vec3]>,
+    prepared: OnceLock<Result<(Collider, Arc<FaceSymmetries>), RollFailure>>,
+}
+
+#[derive(Clone, Eq, PartialEq, Hash)]
+struct GeometryKey {
+    mesh: AssetId<Mesh>,
+    kind: DieKind,
+    faces: Vec<(String, [u32; 3])>,
+}
+
+/// Weak entries share geometry without extending the lifetime of unused meshes.
+#[derive(Default)]
+pub struct GeometryCache {
+    entries: HashMap<GeometryKey, Weak<SharedGeometry>>,
+}
+
+impl GeometryCache {
+    pub fn invalidate(&mut self, modified: &HashSet<AssetId<Mesh>>) {
+        self.entries.retain(|key, geometry| !modified.contains(&key.mesh) && geometry.strong_count() > 0);
+    }
+
+    fn get(&mut self, key: GeometryKey, meshes: &Assets<Mesh>) -> Result<Arc<SharedGeometry>, RollFailure> {
+        if let Some(geometry) = self.entries.get(&key).and_then(Weak::upgrade) {
+            return Ok(geometry);
+        }
+        let mesh = meshes.get(key.mesh).ok_or(RollFailure::AssetUnavailable)?;
+        let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
+            return Err(RollFailure::InvalidGeometry);
+        };
+        let vertices: Box<[Vec3]> = positions.iter().copied().map(Vec3::from_array).collect();
+        if vertices.len() < 4 || vertices.iter().any(|position| !position.is_finite()) {
+            return Err(RollFailure::InvalidGeometry);
+        }
+        let geometry = Arc::new(SharedGeometry { vertices, prepared: OnceLock::new() });
+        self.entries.insert(key, Arc::downgrade(&geometry));
+        Ok(geometry)
+    }
 }
 
 /// Capture configuration and asset identities without copying mesh vertices.
@@ -72,28 +117,29 @@ pub fn current_stamp(world: &World, key: &CacheKey) -> Result<Option<ArenaStamp>
 }
 
 /// Copy ready mesh positions and arena inputs for use outside the main world.
-pub fn snapshot(world: &World, key: &CacheKey) -> Result<Option<SimulationTemplate>, RollFailure> {
+pub fn snapshot(
+    world: &World,
+    key: &CacheKey,
+    shared: &mut GeometryCache,
+) -> Result<Option<SimulationTemplate>, RollFailure> {
     let Some(stamp) = current_stamp(world, key)? else { return Ok(None) };
     let arena = world.get::<DiceArena>(key.arena).ok_or(RollFailure::MissingArena)?;
     let diceset = world.get::<Diceset>(arena.diceset).ok_or(RollFailure::MissingDiceset)?;
     let meshes = world.get_resource::<Assets<Mesh>>().ok_or(RollFailure::AssetUnavailable)?;
-    let mut vertices = Vec::with_capacity(key.kinds.len());
-    for mesh_id in stamp.meshes.iter() {
-        let mesh = meshes.get(*mesh_id).ok_or(RollFailure::AssetUnavailable)?;
-        let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) else {
-            return Err(RollFailure::InvalidGeometry);
-        };
-        let positions: Vec<Vec3> = positions.iter().copied().map(Vec3::from_array).collect();
-        if positions.len() < 4 || positions.iter().any(|position| !position.is_finite()) {
-            return Err(RollFailure::InvalidGeometry);
-        }
-        vertices.push(positions);
+    let mut geometry = Vec::with_capacity(key.kinds.len());
+    for (index, kind) in key.kinds.iter().enumerate() {
+        geometry.push(
+            shared.get(
+                GeometryKey { mesh: stamp.meshes[index], kind: *kind, faces: stamp.faces[index].clone() },
+                meshes,
+            )?,
+        );
     }
     Ok(Some(SimulationTemplate {
         arena: arena.clone(),
         kinds: key.kinds.clone(),
         gravity: gravity(world),
-        vertices,
+        geometry,
         orientations: diceset.orientations.clone(),
         stamp,
     }))
@@ -101,20 +147,19 @@ pub fn snapshot(world: &World, key: &CacheKey) -> Result<Option<SimulationTempla
 
 /// Construct each distinct collider and symmetry lookup once in the background.
 pub fn prepare_geometry(template: &SimulationTemplate) -> Result<PreparedGeometry, RollFailure> {
-    if template.kinds.len() != template.vertices.len() {
+    if template.kinds.len() != template.geometry.len() {
         return Err(RollFailure::InvalidGeometry);
     }
-    let mut unique: HashMap<DieKind, (Collider, Arc<FaceSymmetries>)> = HashMap::new();
     let mut colliders = Vec::with_capacity(template.kinds.len());
     let mut symmetries = Vec::with_capacity(template.kinds.len());
-    for (kind, vertices) in template.kinds.iter().zip(template.vertices.iter()) {
-        if let std::collections::hash_map::Entry::Vacant(entry) = unique.entry(*kind) {
-            let symmetry = FaceSymmetries::new(*kind, &template.orientations, vertices)
+    for (kind, geometry) in template.kinds.iter().zip(template.geometry.iter()) {
+        let prepared = geometry.prepared.get_or_init(|| {
+            let symmetry = FaceSymmetries::new(*kind, &template.orientations, &geometry.vertices)
                 .map_err(|_| RollFailure::InvalidGeometry)?;
-            let collider = Collider::convex_hull(vertices.clone()).ok_or(RollFailure::InvalidGeometry)?;
-            entry.insert((collider, Arc::new(symmetry)));
-        }
-        let (collider, symmetry) = unique.get(kind).ok_or(RollFailure::InvalidGeometry)?;
+            let collider = Collider::convex_hull(geometry.vertices.to_vec()).ok_or(RollFailure::InvalidGeometry)?;
+            Ok((collider, Arc::new(symmetry)))
+        });
+        let (collider, symmetry) = prepared.as_ref().map_err(Clone::clone)?;
         colliders.push(collider.clone());
         symmetries.push(Arc::clone(symmetry));
     }
@@ -154,7 +199,9 @@ pub fn corrections(
 }
 
 fn gravity(world: &World) -> Vec3 {
-    world.get_resource::<Gravity>().map_or(Vec3::NEG_Y * 23.1, |gravity| gravity.0)
+    world
+        .get_resource::<super::plugin::DiceSimulationGravity>()
+        .map_or(Vec3::NEG_Y * 23.1, |gravity| gravity.acceleration)
 }
 
 fn asset_ready(asset_server: Option<&AssetServer>, id: UntypedAssetId) -> Result<bool, RollFailure> {
@@ -240,7 +287,8 @@ mod tests {
         let kinds = vec![DieKind::D6, DieKind::D6];
         let gravity = Vec3::NEG_Y * 23.1;
         let stamp = make_stamp(&arena, gravity, Vec::new(), &kinds, &orientations);
-        SimulationTemplate { arena, kinds, gravity, vertices: vec![vertices.clone(), vertices], orientations, stamp }
+        let geometry = Arc::new(SharedGeometry { vertices: vertices.into_boxed_slice(), prepared: OnceLock::new() });
+        SimulationTemplate { arena, kinds, gravity, geometry: vec![geometry.clone(), geometry], orientations, stamp }
     }
 
     #[test]
@@ -261,17 +309,38 @@ mod tests {
         let geometry = prepare_geometry(&template).unwrap();
         assert_eq!(geometry.colliders.len(), 2);
         assert!(Arc::ptr_eq(&geometry.symmetries[0], &geometry.symmetries[1]));
-        template.vertices[0][0].x = f32::NAN;
+        template.geometry[0] =
+            Arc::new(SharedGeometry { vertices: vec![Vec3::NAN; 8].into_boxed_slice(), prepared: OnceLock::new() });
         assert!(matches!(prepare_geometry(&template), Err(RollFailure::InvalidGeometry)));
+    }
+
+    #[test]
+    fn geometry_registry_separates_metadata_and_releases_unused_meshes() {
+        let mut meshes = Assets::<Mesh>::default();
+        let mesh = meshes.add(Cuboid::new(2.0, 2.0, 2.0));
+        let template = template();
+        let mut key = GeometryKey { mesh: mesh.id(), kind: DieKind::D6, faces: template.stamp.faces[0].clone() };
+        let mut shared = GeometryCache::default();
+        let first = shared.get(key.clone(), &meshes).expect("geometry");
+        let again = shared.get(key.clone(), &meshes).expect("same geometry");
+        assert!(Arc::ptr_eq(&first, &again));
+        key.faces[0].0 = "changed".into();
+        let changed = shared.get(key, &meshes).expect("changed metadata");
+        assert!(!Arc::ptr_eq(&first, &changed));
+        drop(first);
+        drop(again);
+        drop(changed);
+        shared.invalidate(&HashSet::new());
+        assert!(shared.entries.is_empty());
     }
 
     #[test]
     fn missing_entities_fail_without_waiting_for_assets() {
         let mut world = World::new();
         let mut key = CacheKey { arena: Entity::PLACEHOLDER, kinds: vec![DieKind::D6] };
-        assert!(matches!(snapshot(&world, &key), Err(RollFailure::MissingArena)));
+        assert!(matches!(snapshot(&world, &key, &mut GeometryCache::default()), Err(RollFailure::MissingArena)));
         key.arena = world.spawn(DiceArena::default()).id();
-        assert!(matches!(snapshot(&world, &key), Err(RollFailure::MissingDiceset)));
+        assert!(matches!(snapshot(&world, &key, &mut GeometryCache::default()), Err(RollFailure::MissingDiceset)));
     }
 
     #[test]

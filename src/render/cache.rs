@@ -3,6 +3,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
+    time::Duration,
 };
 
 use bevy::{
@@ -11,19 +12,21 @@ use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
 };
-use rand::RngCore;
 
 use crate::dice::{DiceRoll, DieKind, RollOutcome};
 use crate::sim::{RecordedThrow, SimulationError, SimulationInput, simulate_throw};
 
 use super::{
     cache_assets::{
-        CacheKey, PreparedGeometry, SimulationTemplate, corrections, current_stamp, prepare_geometry, snapshot,
+        CacheKey, GeometryCache, PreparedGeometry, SimulationTemplate, corrections, current_stamp, prepare_geometry,
+        snapshot,
     },
-    cached_roll::{CachedRollRequest, PrecomputeRequest, RollFailed, RollFailure, validate_outcome, validate_roll},
+    cached_roll::{
+        PrecomputeRequest, RollFailed, RollFailure, RollRequest, base_composition, validate_outcome, validate_roll,
+    },
     diceset::Diceset,
     plugin::DiceRenderLayer,
-    rng::DiceRng,
+    rng::{DiceRng, DiceSimulationRng},
     roller::RollComplete,
     spawn::SpawnedDie,
 };
@@ -34,6 +37,8 @@ pub const PRECOMPUTE_QUEUE_DEPTH: usize = 2;
 #[derive(Default)]
 struct CacheEntry {
     last_refill: u64,
+    retry_failures: u32,
+    retry_at: Duration,
     template: Option<Arc<SimulationTemplate>>,
     geometry: Option<Arc<PreparedGeometry>>,
     ready: VecDeque<RecordedThrow>,
@@ -78,6 +83,7 @@ struct CachedDie {
 #[derive(Resource, Default)]
 pub struct PrecomputeCache {
     entries: HashMap<CacheKey, CacheEntry>,
+    shared_geometry: GeometryCache,
     pending: VecDeque<PendingPresentation>,
     active: HashMap<Entity, Playback>,
     job: Option<CacheJob>,
@@ -88,23 +94,7 @@ pub struct PrecomputeCache {
 impl PrecomputeCache {
     /// Ready recordings for the expression's base dice after keep modifiers.
     pub fn ready_count(&self, arena: Entity, roll: &DiceRoll) -> usize {
-        let mut kinds = Vec::new();
-        for term in roll.terms.iter() {
-            let mut count = term.count;
-            for limit in [term.options.keep_highest, term.options.keep_lowest].into_iter().flatten() {
-                count = count.min(limit);
-            }
-            if count > crate::sim::MAX_DICE_PER_ROLL as u32 {
-                return 0;
-            }
-            for _ in 0..count {
-                kinds.push(term.kind);
-                if term.kind == DieKind::D100 {
-                    kinds.push(DieKind::D10);
-                }
-            }
-        }
-        kinds.sort_by_key(|kind| kind.mesh_index());
+        let Ok(kinds) = base_composition(roll) else { return 0 };
         self.entries.get(&CacheKey { arena, kinds }).map_or(0, |entry| entry.ready.len())
     }
 
@@ -113,7 +103,7 @@ impl PrecomputeCache {
         self.entries.len()
     }
 
-    fn request(&mut self, request: CachedRollRequest, rng: &mut DiceRng) -> Result<(), RollFailure> {
+    fn request(&mut self, request: RollRequest, rng: &mut DiceRng) -> Result<(), RollFailure> {
         validate_roll(&request.roll).map_err(RollFailure::InvalidOutcome)?;
         let outcome = request.outcome.unwrap_or_else(|| request.roll.roll_detailed(rng));
         validate_outcome(&request.roll, &outcome).map_err(RollFailure::InvalidOutcome)?;
@@ -134,6 +124,7 @@ impl PrecomputeCache {
     }
 
     fn refresh(&mut self, world: &World) {
+        self.shared_geometry.invalidate(&self.modified_meshes);
         self.entries.retain(|key, _| world.get::<super::arena::DiceArena>(key.arena).is_some());
         for (key, entry) in self.entries.iter_mut() {
             let changed_mesh = entry.template.as_ref().is_some_and(|template| {
@@ -146,6 +137,8 @@ impl PrecomputeCache {
             if unchanged {
                 continue;
             }
+            entry.retry_failures = 0;
+            entry.retry_at = Duration::ZERO;
             entry.ready.clear();
             entry.geometry = None;
             entry.template = None;
@@ -156,7 +149,7 @@ impl PrecomputeCache {
                 Ok(None) => {
                     entry.failure = None;
                 }
-                Ok(Some(_)) => match snapshot(world, key) {
+                Ok(Some(_)) => match snapshot(world, key, &mut self.shared_geometry) {
                     Ok(Some(template)) => {
                         entry.template = Some(Arc::new(template));
                         entry.failure = None;
@@ -173,7 +166,7 @@ impl PrecomputeCache {
         self.modified_meshes.clear();
     }
 
-    fn collect_job(&mut self) {
+    fn collect_job(&mut self, now: Duration) {
         let Some(job) = self.job.as_mut() else { return };
         let Some(result) = check_ready(&mut job.task) else { return };
         let Some(job) = self.job.take() else { return };
@@ -183,6 +176,8 @@ impl PrecomputeCache {
         }
         match result {
             Ok(output) => {
+                entry.retry_failures = 0;
+                entry.retry_at = Duration::ZERO;
                 entry.geometry = Some(output.geometry);
                 if entry.ready.len() < PRECOMPUTE_QUEUE_DEPTH {
                     entry.ready.push_back(output.recording);
@@ -190,36 +185,47 @@ impl PrecomputeCache {
             }
             Err(err) => {
                 warn!("could not precompute dice for {:?}: {err}", job.key.arena);
-                if err != RollFailure::SimulationFailed {
+                if err == RollFailure::SimulationFailed {
+                    entry.retry_failures = entry.retry_failures.saturating_add(1);
+                    let delay = Duration::from_millis(250 * (1u64 << entry.retry_failures.saturating_sub(1).min(5)));
+                    entry.retry_at = now.saturating_add(delay);
+                } else {
                     entry.failure = Some(err);
                 }
             }
         }
     }
 
+    fn next_refill_key(&self, now: Duration) -> Option<CacheKey> {
+        let needs_refill = |entry: &CacheEntry| {
+            if now < entry.retry_at {
+                return false;
+            }
+            entry.template.is_some() && entry.failure.is_none() && entry.ready.len() < PRECOMPUTE_QUEUE_DEPTH
+        };
+        self.entries
+            .iter()
+            .filter(|(_, entry)| needs_refill(entry))
+            .min_by_key(|(key, entry)| {
+                let pending_index = self.pending.iter().position(|request| &request.key == *key);
+                let urgent = entry.ready.is_empty() && pending_index.is_some();
+                (!urgent, entry.last_refill, pending_index.unwrap_or(usize::MAX), entry.ready.len())
+            })
+            .map(|(key, _)| key.clone())
+    }
+
     fn refill(&mut self, world: &mut World) {
         if self.job.is_some() {
             return;
         }
-        let needs_refill = |entry: &CacheEntry| {
-            entry.template.is_some() && entry.failure.is_none() && entry.ready.len() < PRECOMPUTE_QUEUE_DEPTH
-        };
-        let key = self
-            .entries
-            .iter()
-            .filter(|(_, entry)| needs_refill(entry))
-            .min_by_key(|(key, entry)| {
-                let demanded = self.pending.iter().any(|request| &request.key == *key);
-                (entry.last_refill, !demanded, entry.ready.len())
-            })
-            .map(|(key, _)| key.clone());
+        let key = self.next_refill_key(world.resource::<Time<Real>>().elapsed());
         let Some(key) = key else { return };
         let Some(entry) = self.entries.get_mut(&key) else { return };
         let Some(template) = entry.template.clone() else { return };
         let geometry = entry.geometry.clone();
         self.refill_serial = self.refill_serial.wrapping_add(1);
         entry.last_refill = self.refill_serial;
-        let seed = world.resource_mut::<DiceRng>().next_u64();
+        let seed = world.resource_mut::<DiceSimulationRng>().next_seed();
         let input = template.clone();
         let task = AsyncComputeTaskPool::get().spawn(async move {
             let geometry = match geometry {
@@ -301,10 +307,6 @@ impl PrecomputeCache {
             }
             if world.get::<super::arena::DiceArena>(request.arena).is_none() {
                 fail(world, &request, RollFailure::MissingArena);
-                continue;
-            }
-            if request.key.kinds.is_empty() {
-                complete(world, request);
                 continue;
             }
             let Some(entry) = self.entries.get_mut(&request.key) else {
@@ -409,7 +411,7 @@ fn complete(world: &mut World, request: PendingPresentation) {
 }
 
 pub fn queue_cached_rolls(
-    mut requests: MessageReader<CachedRollRequest>,
+    mut requests: MessageReader<RollRequest>,
     mut warming: MessageReader<PrecomputeRequest>,
     mut mesh_events: MessageReader<AssetEvent<Mesh>>,
     mut cache: ResMut<PrecomputeCache>,
@@ -427,16 +429,13 @@ pub fn queue_cached_rolls(
         }
     }
     for request in warming.read() {
-        if let Err(err) = validate_roll(&request.roll) {
-            warn!("cannot precompute expression: {err}");
-            continue;
-        }
-        let outcome = request.roll.roll_detailed(&mut *rng);
-        if let Err(err) = validate_outcome(&request.roll, &outcome) {
-            warn!("cannot precompute expression: {err}");
-            continue;
-        }
-        let (kinds, _) = physical_dice(&outcome);
+        let kinds = match base_composition(&request.roll) {
+            Ok(kinds) => kinds,
+            Err(err) => {
+                warn!("cannot precompute expression: {err}");
+                continue;
+            }
+        };
         if !kinds.is_empty() {
             cache.entries.entry(CacheKey { arena: request.arena, kinds }).or_default().failure = None;
         }
@@ -446,7 +445,7 @@ pub fn queue_cached_rolls(
 pub fn update_precompute_cache(world: &mut World) {
     world.resource_scope(|world, mut cache: Mut<PrecomputeCache>| {
         cache.refresh(world);
-        cache.collect_job();
+        cache.collect_job(world.resource::<Time<Real>>().elapsed());
         cache.play(world);
         cache.start_ready(world);
         cache.refill(world);
@@ -470,6 +469,7 @@ mod tests {
         app.init_resource::<Assets<StandardMaterial>>();
         app.init_resource::<PrecomputeCache>();
         app.insert_resource(DiceRng::from_seed(1234));
+        app.insert_resource(DiceSimulationRng::from_seed(4321));
         app.insert_resource(DiceRenderLayer { layer: 0 });
         app.add_message::<RollComplete>();
         app.add_message::<RollFailed>();
@@ -487,7 +487,7 @@ mod tests {
     }
 
     fn submit(world: &mut World, arena: Entity, roll: &DiceRoll, roll_id: u64) {
-        let request = CachedRollRequest {
+        let request = RollRequest {
             arena,
             roll_id,
             roll: roll.clone(),
@@ -526,6 +526,44 @@ mod tests {
         world.resource_scope(|world, mut cache: Mut<PrecomputeCache>| {
             cache.play(world);
             cache.start_ready(world);
+        });
+    }
+
+    #[test]
+    fn geometry_is_shared_across_compositions_and_arenas_and_replaced_on_mesh_change() {
+        let (mut app, arena, roll) = fixture();
+        let world = app.world_mut();
+        submit(world, arena, &roll, 1);
+        let other_arena = world.spawn(world.get::<DiceArena>(arena).expect("arena").clone()).id();
+        let first_key = CacheKey { arena, kinds: vec![DieKind::D6] };
+        let other_key = CacheKey { arena: other_arena, kinds: vec![DieKind::D6; 4] };
+        world.resource_scope(|world, mut cache: Mut<PrecomputeCache>| {
+            cache.entries.entry(other_key.clone()).or_default();
+            cache.refresh(world);
+            let first = cache.entries[&first_key].template.clone().expect("first template");
+            let other = cache.entries[&other_key].template.clone().expect("other template");
+            for geometry in other.geometry.iter() {
+                assert!(Arc::ptr_eq(&first.geometry[0], geometry));
+            }
+            let prepared_first = prepare_geometry(&first).expect("first geometry");
+            let prepared_other = prepare_geometry(&other).expect("other geometry");
+            for symmetry in prepared_other.symmetries.iter() {
+                assert!(Arc::ptr_eq(&prepared_first.symmetries[0], symmetry));
+            }
+            let diceset = world.get::<Diceset>(first.arena.diceset).expect("diceset");
+            let mesh = diceset.handles().expect("handles").mesh(DieKind::D6.mesh_index());
+            world
+                .resource_mut::<Assets<Mesh>>()
+                .insert(mesh.id(), Cuboid::new(2.0, 2.0, 2.0).mesh().build())
+                .expect("mesh exists");
+            cache.modified_meshes.insert(mesh.id());
+            cache.refresh(world);
+            let replacement = cache.entries[&first_key].template.as_ref().expect("replacement");
+            let other_replacement = cache.entries[&other_key].template.as_ref().expect("other replacement");
+            assert!(!Arc::ptr_eq(&first.geometry[0], &replacement.geometry[0]));
+            assert!(Arc::ptr_eq(&replacement.geometry[0], &other_replacement.geometry[0]));
+            let prepared_replacement = prepare_geometry(replacement).expect("replacement geometry");
+            assert!(!Arc::ptr_eq(&prepared_first.symmetries[0], &prepared_replacement.symmetries[0]));
         });
     }
 
@@ -616,6 +654,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             world.resource_mut::<Time>().advance_by(Duration::from_millis(100));
+            world.resource_mut::<Time<Real>>().advance_by(Duration::from_millis(100));
             update_precompute_cache(world);
             assert!(world.resource::<Messages<RollFailed>>().is_empty());
             let cache = world.resource::<PrecomputeCache>();
@@ -667,10 +706,16 @@ mod tests {
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         while cache.job.is_some() {
-            cache.collect_job();
+            cache.collect_job(Duration::ZERO);
             assert!(Instant::now() < deadline, "completed task was not collected");
             std::thread::yield_now();
         }
+        update_precompute_cache(world);
+        assert!(world.resource::<PrecomputeCache>().job.is_none());
+        world.resource_mut::<Time<Real>>().advance_by(Duration::from_millis(249));
+        update_precompute_cache(world);
+        assert!(world.resource::<PrecomputeCache>().job.is_none());
+        world.resource_mut::<Time<Real>>().advance_by(Duration::from_millis(1));
         update_precompute_cache(world);
         let cache = world.resource::<PrecomputeCache>();
         assert_eq!(cache.pending.len(), 1);
@@ -699,12 +744,128 @@ mod tests {
         let mut cache = world.resource_mut::<PrecomputeCache>();
         let deadline = Instant::now() + Duration::from_secs(5);
         while cache.job.is_some() {
-            cache.collect_job();
+            cache.collect_job(Duration::ZERO);
             assert!(Instant::now() < deadline, "completed task was not collected");
             std::thread::yield_now();
         }
         assert_eq!(cache.ready_count(arena, &roll), 0);
         assert_eq!(cache.pending.len(), 1);
+    }
+
+    fn finish_job(cache: &mut PrecomputeCache, key: &CacheKey, now: Duration, success: bool) {
+        let template = cache.entries[key].template.clone().expect("template");
+        let geometry = Arc::new(prepare_geometry(&template).expect("geometry"));
+        cache.job = Some(CacheJob {
+            key: key.clone(),
+            template,
+            task: AsyncComputeTaskPool::get().spawn(async move {
+                if success {
+                    Ok(JobOutput { recording: recording(), geometry })
+                } else {
+                    Err(RollFailure::SimulationFailed)
+                }
+            }),
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cache.job.is_some() {
+            cache.collect_job(now);
+            assert!(Instant::now() < deadline, "completed task was not collected");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn retries_back_off_to_cap_and_reset_after_success_or_input_change() {
+        let (mut app, arena, roll) = fixture();
+        let world = app.world_mut();
+        submit(world, arena, &roll, 1);
+        let key = CacheKey { arena, kinds: vec![DieKind::D6] };
+        world.resource_scope(|world, mut cache: Mut<PrecomputeCache>| {
+            let now = Duration::from_secs(20);
+            for delay in [250, 500, 1000, 2000, 4000, 8000, 8000] {
+                finish_job(&mut cache, &key, now, false);
+                assert_eq!(cache.entries[&key].retry_at, now + Duration::from_millis(delay));
+                assert!(cache.entries[&key].failure.is_none());
+                assert_eq!(cache.pending.len(), 1);
+            }
+            finish_job(&mut cache, &key, now, true);
+            assert_eq!(cache.entries[&key].retry_at, Duration::ZERO);
+            assert_eq!(cache.entries[&key].retry_failures, 0);
+            finish_job(&mut cache, &key, now, false);
+            assert_eq!(cache.entries[&key].retry_at, now + Duration::from_millis(250));
+            world.get_mut::<DiceArena>(arena).expect("arena").size.x += 1.0;
+            cache.refresh(world);
+            assert_eq!(cache.entries[&key].retry_at, Duration::ZERO);
+            assert_eq!(cache.entries[&key].retry_failures, 0);
+        });
+        assert!(world.resource::<Messages<RollFailed>>().is_empty());
+    }
+
+    #[test]
+    fn waiting_empty_queue_precedes_topups_and_backoff_allows_other_work() {
+        let (mut app, arena, roll) = fixture();
+        let world = app.world_mut();
+        let other_arena = world.spawn(world.get::<DiceArena>(arena).expect("arena").clone()).id();
+        submit(world, arena, &roll, 1);
+        submit(world, other_arena, &roll, 2);
+        let urgent = CacheKey { arena, kinds: vec![DieKind::D6] };
+        let topup = CacheKey { arena: other_arena, kinds: vec![DieKind::D6] };
+        fill(world, other_arena, 1);
+        world.resource_scope(|_, mut cache: Mut<PrecomputeCache>| {
+            cache.entries.get_mut(&urgent).expect("urgent").last_refill = 2;
+            cache.entries.get_mut(&topup).expect("topup").last_refill = 1;
+            cache.pending.retain(|request| request.arena == arena);
+            assert_eq!(cache.next_refill_key(Duration::ZERO), Some(urgent.clone()));
+            // Complete a failed attempt before testing eligibility during backoff.
+            finish_job(&mut cache, &urgent, Duration::ZERO, false);
+            assert_eq!(cache.next_refill_key(Duration::ZERO), Some(topup));
+            assert_eq!(cache.pending.len(), 1);
+        });
+    }
+
+    #[test]
+    fn warming_uses_base_composition_and_preserves_gameplay_rng() {
+        use rand::RngCore;
+        let (mut app, arena, _) = fixture();
+        let world = app.world_mut();
+        world.init_resource::<Messages<RollRequest>>();
+        world.init_resource::<Messages<PrecomputeRequest>>();
+        world.init_resource::<Messages<AssetEvent<Mesh>>>();
+        let roll = DiceRoll::parse("1d6").expect("roll").with_explode();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(queue_cached_rolls);
+        for _ in 0..3 {
+            world.write_message(PrecomputeRequest { arena, roll: roll.clone() });
+            schedule.run(world);
+        }
+        world.resource_scope(|world, mut cache: Mut<PrecomputeCache>| cache.refresh(world));
+        fill(world, arena, 2);
+        assert_eq!(world.resource::<PrecomputeCache>().entry_count(), 1);
+        assert_eq!(world.resource::<PrecomputeCache>().ready_count(arena, &roll), 2);
+        for _ in 0..20 {
+            world.resource_mut::<DiceSimulationRng>().next_seed();
+        }
+        let mut expected = DiceRng::from_seed(1234);
+        assert_eq!(world.resource_mut::<DiceRng>().next_u64(), expected.next_u64());
+        world.write_message(RollRequest {
+            arena,
+            roll_id: 7,
+            roll: roll.clone(),
+            outcome: Some(RollOutcome {
+                total: 8,
+                term_lengths: vec![2],
+                dice: vec![
+                    RolledDie { kind: DieKind::D6, value: 6, negate: false },
+                    RolledDie { kind: DieKind::D6, value: 2, negate: false },
+                ],
+            }),
+        });
+        schedule.run(world);
+        let cache = world.resource::<PrecomputeCache>();
+        assert!(cache.entries.contains_key(&CacheKey { arena, kinds: vec![DieKind::D6; 2] }));
+        assert_eq!(cache.ready_count(arena, &roll), 2);
+        assert_eq!(cache.pending.len(), 1);
+        assert!(world.resource::<Messages<RollFailed>>().is_empty());
     }
 
     #[test]

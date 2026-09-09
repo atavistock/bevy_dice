@@ -1,35 +1,21 @@
-//! [`DicePlugin`]: avian + roll messages + pipeline systems, optionally
-//! auto-spawning a default arena for the enabled embedded diceset.
+//! Recorded dice playback, background precomputation, and arena lighting.
 
-use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::dice::{DiceRoll, DiceTerm, DieKind, Options, RollOutcome, RolledDie};
 
-use super::arena::{DefaultArena, DiceArena, DiceBoxWall, spawn_arena_walls};
+use super::arena::{DefaultArena, DiceArena, spawn_arena_lights};
 use super::cache::{PrecomputeCache, queue_cached_rolls, update_precompute_cache};
-use super::cached_roll::{CachedRollRequest, PrecomputeRequest, RollFailed};
+use super::cached_roll::{PrecomputeRequest, RollFailed, RollRequest};
 use super::diceset::{Diceset, embedded_table, load_diceset_handles};
-use super::pending::{PendingRolls, handle_roll_requests};
-use super::resolve::{despawn_orphaned_dice, prune_orphaned_pending_rolls, resolve_pending_rolls};
-use super::rng::DiceRng;
-use super::roller::{NextRollId, RollComplete, RollRequest};
-use super::spawn::SpawnedDie;
+use super::rng::{DiceRng, DiceSimulationRng};
+use super::roller::{NextRollId, RollComplete};
+use super::spawn::{SpawnedDie, despawn_orphaned_dice};
 use crate::sim::{DicePhysicsConfig, SpawnConfig};
 
-/// Adds avian3d physics (unless the host already did), the roll request/complete messages, the
-/// tumble/settle/emit pipeline, and an overhead [`DirectionalLight`] for the
-/// dice. With an embedded diceset feature enabled, auto-spawns a [`DiceArena`]
-/// tagged [`DefaultArena`] unless
-/// [`spawn_default_arena`](Self::spawn_default_arena) is `false`.
-///
-/// Dice render on layer `0` (the default Bevy layer) by default, so any
-/// camera that renders your scene also renders the dice with no extra setup.
-/// Set [`render_layer`](Self::render_layer) to a non-zero layer to isolate
-/// dice (the camera then needs `RenderLayers::from_layers(&[0, N])`).
+/// Adds cached roll playback and arena lighting, optionally spawning a default arena.
 pub struct DicePlugin {
-    /// World-space gravity along -Y in m/s^2. `None` uses `-23.1` (tabletop feel)
-    /// when this plugin adds avian, and leaves the host's `Gravity` alone otherwise.
+    /// Simulation gravity along Y in m/s^2; `None` defaults to `-23.1`.
     pub gravity: Option<f32>,
     /// Auto-spawn a [`DiceArena`] + [`DefaultArena`] for the enabled embedded
     /// diceset feature. Set `false` when supplying your own arena.
@@ -46,12 +32,25 @@ impl Default for DicePlugin {
     }
 }
 
-/// Gravity applied when this plugin owns the avian install; feels like a tabletop.
+/// Default background simulation gravity along Y.
 const DEFAULT_GRAVITY: f32 = -23.1;
+
+/// Gravity used only by background dice simulations.
+#[derive(Resource, Clone, Copy, Reflect)]
+#[reflect(Resource)]
+pub struct DiceSimulationGravity {
+    pub acceleration: Vec3,
+}
+
+impl Default for DiceSimulationGravity {
+    fn default() -> Self {
+        Self { acceleration: Vec3::new(0.0, DEFAULT_GRAVITY, 0.0) }
+    }
+}
 
 /// Resource holding the active [`DicePlugin::render_layer`] for spawn-time use.
 #[derive(Resource, Clone, Copy)]
-pub(super) struct DiceRenderLayer {
+pub struct DiceRenderLayer {
     pub layer: u8,
 }
 
@@ -60,27 +59,22 @@ impl Plugin for DicePlugin {
         register_embedded_dicesets(app);
 
         let render_layer = self.render_layer;
-        let host_has_physics = app.is_plugin_added::<PhysicsSchedulePlugin>();
-        if !host_has_physics {
-            app.add_plugins(PhysicsPlugins::default());
+        app.init_resource::<DiceSimulationGravity>();
+        if let Some(gravity) = self.gravity {
+            app.insert_resource(DiceSimulationGravity { acceleration: Vec3::new(0.0, gravity, 0.0) });
         }
-        let gravity = self.gravity.or((!host_has_physics).then_some(DEFAULT_GRAVITY));
-        if let Some(gravity) = gravity {
-            app.insert_resource(Gravity(Vec3::new(0.0, gravity, 0.0)));
-        }
-        app.init_resource::<PendingRolls>()
-            .init_resource::<PrecomputeCache>()
+        app.init_resource::<PrecomputeCache>()
             .init_resource::<NextRollId>()
             .init_resource::<DiceRng>()
+            .init_resource::<DiceSimulationRng>()
             .insert_resource(DiceRenderLayer { layer: render_layer })
             .add_message::<RollRequest>()
             .add_message::<RollComplete>()
-            .add_message::<CachedRollRequest>()
             .add_message::<PrecomputeRequest>()
             .add_message::<RollFailed>()
             .register_type::<DiceArena>()
             .register_type::<DefaultArena>()
-            .register_type::<DiceBoxWall>()
+            .register_type::<DiceSimulationGravity>()
             .register_type::<DicePhysicsConfig>()
             .register_type::<SpawnConfig>()
             .register_type::<Diceset>()
@@ -96,11 +90,9 @@ impl Plugin for DicePlugin {
             .add_systems(
                 Update,
                 (
-                    spawn_arena_walls,
-                    (load_diceset_handles, handle_roll_requests, queue_cached_rolls, update_precompute_cache).chain(),
-                    resolve_pending_rolls,
+                    spawn_arena_lights,
+                    (load_diceset_handles, queue_cached_rolls, update_precompute_cache).chain(),
                     despawn_orphaned_dice,
-                    prune_orphaned_pending_rolls,
                 ),
             );
 
@@ -134,5 +126,53 @@ fn spawn_default_arena_system(mut commands: Commands) {
     if let Some((name, _)) = embedded_table().first() {
         let diceset = commands.spawn(Diceset::embedded(name)).id();
         commands.spawn((DiceArena::default().diceset(diceset), DefaultArena));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use avian3d::prelude::{Collider, Gravity, PhysicsSchedulePlugin, RigidBody};
+    use bevy::asset::AssetPlugin;
+
+    use super::*;
+
+    fn app_with_assets() -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+        app
+    }
+
+    #[test]
+    fn presentation_does_not_install_host_physics() {
+        let mut app = app_with_assets();
+        app.add_plugins(DicePlugin { spawn_default_arena: false, ..default() });
+        assert!(!app.is_plugin_added::<PhysicsSchedulePlugin>());
+        assert!(!app.world().contains_resource::<Gravity>());
+        assert_eq!(app.world().resource::<DiceSimulationGravity>().acceleration, Vec3::new(0.0, -23.1, 0.0));
+    }
+
+    #[test]
+    fn simulation_gravity_is_independent_of_host_gravity() {
+        let mut app = app_with_assets();
+        let host_gravity = Vec3::new(1.0, -9.81, 2.0);
+        app.insert_resource(Gravity(host_gravity));
+        app.add_plugins(DicePlugin { gravity: Some(-15.0), spawn_default_arena: false, ..default() });
+        assert_eq!(app.world().resource::<Gravity>().0, host_gravity);
+        assert_eq!(app.world().resource::<DiceSimulationGravity>().acceleration, Vec3::new(0.0, -15.0, 0.0));
+        assert!(!app.is_plugin_added::<PhysicsSchedulePlugin>());
+    }
+
+    #[test]
+    fn arenas_spawn_lighting_without_host_colliders() {
+        let mut world = World::new();
+        world.insert_resource(DiceRenderLayer { layer: 0 });
+        let arena = world.spawn(DiceArena::default()).id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(spawn_arena_lights);
+        schedule.run(&mut world);
+        assert_eq!(world.query::<&DirectionalLight>().iter(&world).count(), 1);
+        assert_eq!(world.query::<&Collider>().iter(&world).count(), 0);
+        assert_eq!(world.query::<&RigidBody>().iter(&world).count(), 0);
+        assert!(world.get::<Transform>(arena).is_some());
     }
 }

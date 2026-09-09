@@ -44,11 +44,7 @@ pub fn top_down_camera_on_layers(height: f32, extra_layers: &[u8]) -> impl Bundl
 
 // === Visual helpers ===
 
-/// Draws a flat rectangle outline around every [`DiceArena`]'s floor
-/// every frame using Bevy gizmos. Add to `Update` to make the arena
-/// footprint visible from a top-down camera (the walls themselves are
-/// invisible static colliders, and a 3D cube wireframe just clutters the
-/// top-down view).
+/// Draws each arena floor boundary with gizmos; physics walls exist only in simulation.
 pub fn draw_arena_borders(mut gizmos: Gizmos, arenas: Query<&DiceArena>) {
     for arena in arenas.iter() {
         let center = arena.center;

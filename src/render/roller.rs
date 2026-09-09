@@ -8,18 +8,9 @@ use bevy::prelude::*;
 use crate::dice::{DiceRoll, ParseError, RollOutcome};
 
 use super::arena::DefaultArena;
-use super::cached_roll::{CachedRollRequest, OutcomeError, PrecomputeRequest, validate_outcome, validate_roll};
+use super::cached_roll::{OutcomeError, PrecomputeRequest, RollRequest, validate_outcome, validate_roll};
 
-/// Request a physics-driven roll in `arena`; a [`RollComplete`] fires once all dice settle.
-#[derive(Message, Clone, Reflect)]
-pub struct RollRequest {
-    /// Matches the eventual [`RollComplete::roll_id`].
-    pub roll_id: u64,
-    pub roll: DiceRoll,
-    pub arena: Entity,
-}
-
-/// Emitted once every die for `roll_id` has settled.
+/// Emitted when recorded playback for `roll_id` completes.
 #[derive(Message, Clone, Reflect)]
 pub struct RollComplete {
     pub roll_id: u64,
@@ -96,7 +87,7 @@ pub(super) struct NextRollId {
 /// ```
 #[derive(SystemParam)]
 pub struct DiceRoller<'w, 's> {
-    writer: MessageWriter<'w, CachedRollRequest>,
+    writer: MessageWriter<'w, RollRequest>,
     warm_writer: MessageWriter<'w, PrecomputeRequest>,
     default_arena: Query<'w, 's, Entity, With<DefaultArena>>,
     next_roll_id: ResMut<'w, NextRollId>,
@@ -118,7 +109,7 @@ impl<'w, 's> DiceRoller<'w, 's> {
     pub fn roll_in(&mut self, arena: Entity, roll: impl Into<DiceRoll>) -> u64 {
         self.next_roll_id.value = self.next_roll_id.value.wrapping_add(1);
         let roll_id = self.next_roll_id.value;
-        self.writer.write(CachedRollRequest { roll_id, roll: roll.into(), arena, outcome: None });
+        self.writer.write(RollRequest { roll_id, roll: roll.into(), arena, outcome: None });
         roll_id
     }
 
@@ -133,7 +124,7 @@ impl<'w, 's> DiceRoller<'w, 's> {
         validate_outcome(&roll, &outcome)?;
         self.next_roll_id.value = self.next_roll_id.value.wrapping_add(1);
         let roll_id = self.next_roll_id.value;
-        self.writer.write(CachedRollRequest { roll_id, roll, arena, outcome: Some(outcome) });
+        self.writer.write(RollRequest { roll_id, roll, arena, outcome: Some(outcome) });
         Ok(roll_id)
     }
 
@@ -186,7 +177,7 @@ mod tests {
     #[test]
     fn rejected_outcome_does_not_consume_id_or_queue_request() {
         let mut world = World::new();
-        world.init_resource::<Messages<CachedRollRequest>>();
+        world.init_resource::<Messages<RollRequest>>();
         world.init_resource::<Messages<PrecomputeRequest>>();
         world.init_resource::<NextRollId>();
         let arena = world.spawn(DefaultArena).id();
@@ -202,7 +193,7 @@ mod tests {
             Err(OutcomeError::DieValue)
         );
         assert_eq!(world.resource::<NextRollId>().value, 0);
-        assert!(world.resource::<Messages<CachedRollRequest>>().is_empty());
+        assert!(world.resource::<Messages<RollRequest>>().is_empty());
         let valid = RollOutcome {
             total: 6,
             dice: vec![RolledDie { kind: DieKind::D6, value: 6, negate: false }],
@@ -212,7 +203,7 @@ mod tests {
             state.get_mut(&mut world).expect("roller parameters").roll_with_outcome(&roll, valid.clone()),
             Ok(1)
         );
-        let queued = world.resource_mut::<Messages<CachedRollRequest>>().drain().collect::<Vec<_>>();
+        let queued = world.resource_mut::<Messages<RollRequest>>().drain().collect::<Vec<_>>();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].arena, arena);
         assert_eq!(queued[0].outcome, Some(valid));
