@@ -13,7 +13,7 @@ The public modules are `dice` for expression math, `sim` for headless physics an
 ```toml
 [dependencies]
 bevy = "0.19"
-bevy_dice = { version = "0.2", features = ["plain_white"] }
+bevy_dice = { version = "0.4", features = ["plain_white"] }
 ```
 
 The diceset features ship a `.glb` baked into the binary so you do not have to manage assets yourself:
