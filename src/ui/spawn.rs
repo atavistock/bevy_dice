@@ -16,7 +16,7 @@ use super::diceset::GltfAssetHandles;
 /// expression are silently dropped (with a `warn!`); the resulting
 /// `RollComplete` will have fewer dice than the parsed expression asked for.
 /// A d100 uses two entities, so the percentile-roll cap is half this value.
-pub const MAX_DICE_PER_ROLL: usize = 40;
+pub const MAX_DICE_PER_ROLL: usize = 20;
 
 /// Marker for any die spawned by the plugin, plus its owning arena.
 #[derive(Component, Reflect)]

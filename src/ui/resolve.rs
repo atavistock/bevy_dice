@@ -211,7 +211,7 @@ fn trigger_term_modifiers<R: rand::Rng + ?Sized>(
                     }
                     let replacement = spawn_term_member(commands, arena, roll.arena, term.kind, handles, layer, rng);
                     debug_assert_eq!(replacement.len(), range.len());
-                    for (i, new_ref) in range.zip(replacement.into_iter()) {
+                    for (i, new_ref) in range.zip(replacement) {
                         roll.terms[term_index][i] = new_ref;
                     }
                     roll.budgets[term_index] -= 1;

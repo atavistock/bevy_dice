@@ -240,7 +240,7 @@ mod tests {
         let mut rng = rng();
         for _ in 0..200 {
             let total = roll.roll(&mut rng);
-            assert!(total >= 3 + 2 && total <= 18 + 2);
+            assert!((3 + 2..=18 + 2).contains(&total));
         }
     }
 
@@ -250,7 +250,7 @@ mod tests {
         let mut rng = rng();
         for _ in 0..50 {
             let total = roll.roll(&mut rng);
-            assert!(total >= -4 && total <= -1);
+            assert!((-4..=-1).contains(&total));
         }
     }
 
