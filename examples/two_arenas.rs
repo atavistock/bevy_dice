@@ -10,7 +10,8 @@
 
 use bevy::input::keyboard::KeyboardInput;
 use bevy::prelude::*;
-use bevy_dice::ui::{DiceArena, DicePlugin, DiceRoller, Diceset, RollComplete, SpawnConfig, SpawnedDie};
+use bevy_dice::render::{DiceArena, DicePlugin, DiceRoller, Diceset, RollComplete, SpawnedDie};
+use bevy_dice::sim::SpawnConfig;
 
 #[path = "common/mod.rs"]
 mod common;
@@ -33,6 +34,7 @@ fn main() {
         .add_systems(Startup, setup_scene)
         .add_systems(PostStartup, (setup_ui, roll_in_both))
         .add_systems(Update, (reroll_on_key, update_result_text, draw_arena_borders))
+        .add_plugins(common::SmokeTestPlugin)
         .run();
 }
 
@@ -150,8 +152,7 @@ fn reroll_on_key(
         return;
     }
 
-    // Despawn every die in the world. The plugin's orphan-cleanup system
-    // also prunes the matching PendingRolls if any were in flight.
+    // Clear the previous dice; removing an active die interrupts its playback.
     for entity in dice.iter() {
         commands.entity(entity).despawn();
     }

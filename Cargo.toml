@@ -1,6 +1,6 @@
 [package]
 name = "bevy_dice"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 [features]
@@ -14,13 +14,16 @@ metal = []
 clear_orange = []
 
 [dependencies]
-avian3d = "0.7.0"
-# `jpeg` is required because the diceset gltf files embed JPEG textures.
-bevy = { version = "0.19", features = ["jpeg"] }
+avian3d = { version = "0.7.0", default-features = false, features = ["3d", "f32", "parry-f32", "parallel"] }
+# Bundled dicesets contain both JPEG and PNG textures.
+bevy = { version = "0.19", default-features = false, features = ["std", "async_executor", "bevy_asset", "bevy_gltf", "bevy_pbr", "jpeg", "png"] }
 rand = "0.8"
 # Used only to read the `extras.dice_orientations` JSON block out of diceset
 # gltf files. Already in the dependency tree via bevy's gltf loader.
 serde_json = "1"
+
+[dev-dependencies]
+bevy = { version = "0.19", default-features = false, features = ["bevy_winit", "bevy_log", "bevy_ui_render", "bevy_gizmos_render", "default_font", "tonemapping_luts", "zstd_rust", "x11", "wayland"] }
 
 [lints.clippy]
 too_many_arguments = "allow"

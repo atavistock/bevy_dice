@@ -6,7 +6,7 @@
 //! Run: `cargo run --example simple_d20 --features plain_white`
 
 use bevy::prelude::*;
-use bevy_dice::ui::{DicePlugin, DiceRoller};
+use bevy_dice::render::{DicePlugin, DiceRoller};
 
 #[path = "common/mod.rs"]
 mod common;
@@ -19,6 +19,7 @@ fn main() {
         .add_plugins((DefaultPlugins, DicePlugin::default()))
         .add_systems(Startup, setup_scene)
         .add_systems(PostStartup, roll_once)
+        .add_plugins(common::SmokeTestPlugin)
         .run();
 }
 

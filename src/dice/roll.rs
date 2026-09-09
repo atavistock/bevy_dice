@@ -109,12 +109,19 @@ pub struct RollOutcome {
 }
 
 impl RollOutcome {
-    /// Dice contributed by `terms[term_index]`; empty slice if out of range.
+    /// Dice contributed by a term; returns an empty slice for missing or malformed ranges.
     pub fn term_dice(&self, term_index: usize) -> &[RolledDie] {
-        let start: usize = self.term_lengths.iter().take(term_index).map(|&n| n as usize).sum();
-        let len = self.term_lengths.get(term_index).copied().unwrap_or(0) as usize;
-        let end = (start + len).min(self.dice.len());
-        &self.dice[start..end]
+        let Some(&len) = self.term_lengths.get(term_index) else { return &[] };
+        let Some(start) = self
+            .term_lengths
+            .iter()
+            .take(term_index)
+            .try_fold(0usize, |offset, &count| offset.checked_add(count as usize))
+        else {
+            return &[];
+        };
+        let Some(end) = start.checked_add(len as usize) else { return &[] };
+        self.dice.get(start..end).unwrap_or(&[])
     }
 
     /// Human-readable breakdown like `"3d6(4,2,1)+2 = 9"`. Pair with the
@@ -151,7 +158,7 @@ impl<'a> fmt::Display for RollOutcomeDisplay<'a> {
             } else if self.roll.adjustment > 0 {
                 write!(f, " + {}", self.roll.adjustment)?;
             } else {
-                write!(f, " - {}", -self.roll.adjustment)?;
+                write!(f, " - {}", self.roll.adjustment.unsigned_abs())?;
             }
         }
         write!(f, " = {}", self.outcome.total)
@@ -240,7 +247,7 @@ mod tests {
         let mut rng = rng();
         for _ in 0..200 {
             let total = roll.roll(&mut rng);
-            assert!(total >= 3 + 2 && total <= 18 + 2);
+            assert!((3 + 2..=18 + 2).contains(&total));
         }
     }
 
@@ -250,7 +257,7 @@ mod tests {
         let mut rng = rng();
         for _ in 0..50 {
             let total = roll.roll(&mut rng);
-            assert!(total >= -4 && total <= -1);
+            assert!((-4..=-1).contains(&total));
         }
     }
 
@@ -373,5 +380,35 @@ mod tests {
             term_lengths: vec![1, 1],
         };
         assert_eq!(outcome.display(&roll).to_string(), "1d20(12) - 1d4(2) = 10");
+    }
+    #[test]
+    fn malformed_term_ranges_return_empty_without_panicking() {
+        let die = RolledDie { kind: DieKind::D6, value: 1, negate: false };
+        for lengths in [vec![1, 1], vec![u32::MAX, u32::MAX, 1], vec![0, 5], vec![]] {
+            for dice in [vec![], vec![die.clone()]] {
+                let outcome = RollOutcome { total: 0, dice, term_lengths: lengths.clone() };
+                for term_index in [0, 1, 2, usize::MAX] {
+                    let values = outcome.term_dice(term_index);
+                    assert!(values.len() <= outcome.dice.len());
+                }
+                assert!(outcome.term_dice(usize::MAX).is_empty());
+            }
+        }
+        let outcome = RollOutcome { total: 1, dice: vec![die], term_lengths: vec![2] };
+        assert!(outcome.term_dice(0).is_empty());
+        let roll = DiceRoll::parse("2d6").expect("roll");
+        assert_eq!(outcome.display(&roll).to_string(), "2d6() = 1");
+    }
+
+    #[test]
+    fn hand_built_minimum_adjustment_formats_without_overflow() {
+        let mut roll = DiceRoll::parse("1d6").expect("roll");
+        roll.adjustment = i32::MIN;
+        let outcome = RollOutcome {
+            total: i32::MIN + 1,
+            dice: vec![RolledDie { kind: DieKind::D6, value: 1, negate: false }],
+            term_lengths: vec![1],
+        };
+        assert_eq!(outcome.display(&roll).to_string(), "1d6(1) - 2147483648 = -2147483647");
     }
 }

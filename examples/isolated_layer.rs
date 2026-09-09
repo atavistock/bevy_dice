@@ -11,7 +11,7 @@
 //! Run: `cargo run --example isolated_layer --features plain_white`
 
 use bevy::prelude::*;
-use bevy_dice::ui::{DefaultArena, DiceArena, DicePlugin, DiceRoller, Diceset};
+use bevy_dice::render::{DefaultArena, DiceArena, DicePlugin, DiceRoller, Diceset};
 
 #[path = "common/mod.rs"]
 mod common;
@@ -33,6 +33,7 @@ fn main() {
         ))
         .add_systems(Startup, setup_scene)
         .add_systems(PostStartup, roll_once)
+        .add_plugins(common::SmokeTestPlugin)
         .run();
 }
 
@@ -47,7 +48,7 @@ fn setup_scene(mut commands: Commands) {
     // reference it by Entity, so many arenas could share one Diceset.
     let diceset = commands.spawn(Diceset::embedded("plain_white")).id();
 
-    // The arena pins itself to DICE_LAYER. When `spawn_arena_walls` runs,
+    // The arena pins itself to DICE_LAYER. When `spawn_arena_lights` runs,
     // it also spawns a top-down DirectionalLight on this layer so the dice
     // are lit no matter what the host scene's lighting looks like.
     commands.spawn((DiceArena::default().diceset(diceset).render_layer(DICE_LAYER), DefaultArena));

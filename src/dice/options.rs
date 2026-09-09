@@ -93,7 +93,6 @@ impl Options {
     }
 
     /// Runs reroll + explode (sharing one [`MAX_OPTION_ITERATIONS`] budget) then keep.
-    /// Exploded dice are checked too, so the physics path yields the same distribution.
     pub fn apply<R: Rng + ?Sized>(&self, kind: DieKind, rolls: &mut Vec<u32>, rng: &mut R) {
         let mut budget = MAX_OPTION_ITERATIONS;
         let mut idx = 0;
@@ -115,7 +114,7 @@ impl Options {
         self.apply_keep(rolls);
     }
 
-    /// RNG-free trim of `rolls` in place; the physics layer reuses this.
+    /// RNG-free trim of `rolls` in place.
     pub fn apply_keep(&self, rolls: &mut Vec<u32>) {
         if let Some(count) = self.keep_highest {
             keep(rolls, count, true);

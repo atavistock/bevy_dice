@@ -1,0 +1,137 @@
+//! [`DiceArena`] entity: a box that contains tumbling dice. Each arena
+//! references a [`super::Diceset`] entity by [`Entity`], plus its own
+//! physics and throw tuning.
+
+use bevy::camera::visibility::RenderLayers;
+use bevy::prelude::*;
+
+use super::plugin::DiceRenderLayer;
+
+use crate::sim::{DicePhysicsConfig, SimulationArena, SpawnConfig};
+
+/// A playing area; spawn one per concurrent dice region. Tag with
+/// [`DefaultArena`] to make it the target of [`super::DiceRoller::roll`].
+/// Holds a reference to a [`super::Diceset`] entity for its visuals; many
+/// arenas can share one diceset.
+///
+/// ```ignore
+/// let diceset = commands.spawn(Diceset::embedded("plain_white")).id();
+/// commands.spawn((DiceArena::default().diceset(diceset), DefaultArena));
+/// ```
+#[derive(Component, Clone, Reflect)]
+#[reflect(Component)]
+pub struct DiceArena {
+    /// Caller-supplied label for logging and debugging. Not enforced unique.
+    pub name: String,
+    /// World-space center of the arena's box; floor sits at `center.y`.
+    pub center: Vec3,
+    /// Full extents (width, height, depth) of the arena's box.
+    pub size: Vec3,
+    /// Entity carrying the [`super::Diceset`] component this arena draws from.
+    /// `Entity::PLACEHOLDER` until [`DiceArena::diceset`] is called.
+    pub diceset: Entity,
+    /// Render layer for this arena's dice and overhead light. `None` falls
+    /// back to [`super::DicePlugin::render_layer`].
+    pub render_layer: Option<u8>,
+    pub physics: DicePhysicsConfig,
+    pub spawn: SpawnConfig,
+}
+
+impl From<&DiceArena> for SimulationArena {
+    fn from(arena: &DiceArena) -> Self {
+        Self { center: arena.center, size: arena.size, physics: arena.physics.clone(), spawn: arena.spawn.clone() }
+    }
+}
+
+impl Default for DiceArena {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            center: Vec3::ZERO,
+            size: Vec3::new(12.0, 5.0, 6.0),
+            diceset: Entity::PLACEHOLDER,
+            render_layer: None,
+            physics: DicePhysicsConfig::default(),
+            spawn: SpawnConfig::default(),
+        }
+    }
+}
+
+impl DiceArena {
+    /// Sets the arena's label. Used for logs and debugging only.
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
+
+    /// Sets the arena's center as world-space (x, y, z). Floor sits at `y`.
+    pub fn center(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.center = Vec3::new(x, y, z);
+        self
+    }
+
+    /// Sets the arena's full box extents (width, height, depth).
+    pub fn size(mut self, x: f32, y: f32, z: f32) -> Self {
+        self.size = Vec3::new(x, y, z);
+        self
+    }
+
+    /// Sets the [`super::Diceset`] entity this arena draws from. Spawn the
+    /// Diceset first (e.g. `commands.spawn(Diceset::embedded("halloween")).id()`).
+    pub fn diceset(mut self, diceset: Entity) -> Self {
+        self.diceset = diceset;
+        self
+    }
+
+    /// Overrides the render layer used for this arena's dice and overhead
+    /// light. Cameras that should see the dice must include this layer.
+    pub fn render_layer(mut self, layer: u8) -> Self {
+        self.render_layer = Some(layer);
+        self
+    }
+
+    /// Overrides the per-die physics tuning for this arena.
+    pub fn physics(mut self, physics: DicePhysicsConfig) -> Self {
+        self.physics = physics;
+        self
+    }
+
+    /// Overrides the throw-arc tuning for dice entering this arena.
+    pub fn spawn_config(mut self, spawn: SpawnConfig) -> Self {
+        self.spawn = spawn;
+        self
+    }
+}
+
+/// Marker for the arena targeted by [`super::DiceRoller::roll`]; tag at most
+/// one entity or `roll` returns [`super::NoDefaultArena::Ambiguous`].
+#[derive(Component, Default, Reflect)]
+#[reflect(Component)]
+pub struct DefaultArena;
+
+/// Spawns an overhead light for each newly added arena.
+pub fn spawn_arena_lights(
+    mut commands: Commands,
+    new_arenas: Query<(Entity, &DiceArena), Added<DiceArena>>,
+    default_layer: Res<DiceRenderLayer>,
+) {
+    for (arena_entity, arena) in new_arenas.iter() {
+        spawn_arena_light(&mut commands, arena_entity, arena.center, arena.render_layer.unwrap_or(default_layer.layer));
+        // Child lights require a parent transform for propagation.
+        commands.entity(arena_entity).insert_if_new(Transform::default());
+    }
+}
+
+/// Spawns an angled overhead light on the arena's render layer.
+fn spawn_arena_light(commands: &mut Commands, arena_entity: Entity, center: Vec3, layer: u8) {
+    let light = commands
+        .spawn((
+            DirectionalLight { illuminance: 10_000.0, shadow_maps_enabled: true, ..default() },
+            // Offset on X+Z so the light comes from above-corner; the dice
+            // pick up varying shading on each face as they tumble.
+            Transform::from_xyz(center.x + 5.0, center.y + 10.0, center.z + 5.0).looking_at(center, Vec3::Y),
+            RenderLayers::layer(layer as usize),
+        ))
+        .id();
+    commands.entity(arena_entity).add_child(light);
+}

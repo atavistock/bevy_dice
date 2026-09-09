@@ -12,7 +12,7 @@
 
 use bevy::camera::ScalingMode;
 use bevy::prelude::*;
-use bevy_dice::ui::{DicePlugin, DiceRoller, RollComplete, RollError, SpawnedDie};
+use bevy_dice::render::{DicePlugin, DiceRoller, RollComplete, RollError, RollFailed, SpawnedDie};
 
 #[path = "common/mod.rs"]
 mod common;
@@ -24,8 +24,10 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, DicePlugin::default()))
         .add_message::<TextInputSubmitted>()
+        .init_resource::<LatestRoll>()
         .add_systems(Startup, (setup_scene, setup_ui))
         .add_systems(Update, (drive_text_input, on_expression_submitted, show_result))
+        .add_plugins(common::SmokeTestPlugin)
         .run();
 }
 
@@ -48,6 +50,11 @@ fn setup_scene(mut commands: Commands) {
 /// Marker on the text node that shows the most recent roll result.
 #[derive(Component)]
 struct ResultDisplay;
+
+#[derive(Resource, Default)]
+struct LatestRoll {
+    roll_id: Option<u64>,
+}
 
 /// Two stacked text widgets in the top-left corner: the live input line
 /// (driven by [`TextInput`]) and the most recent result line.
@@ -79,15 +86,21 @@ fn on_expression_submitted(
     old_dice: Query<Entity, With<SpawnedDie>>,
     mut roller: DiceRoller,
     mut commands: Commands,
+    mut latest: ResMut<LatestRoll>,
 ) {
     for event in submitted.read() {
+        latest.roll_id = None;
         for entity in old_dice.iter() {
             commands.entity(entity).despawn();
         }
         match roller.roll_expr(&event.value) {
-            Ok(_) => ***result_text = "Rolling...".into(),
+            Ok(roll_id) => {
+                latest.roll_id = Some(roll_id);
+                ***result_text = "Rolling...".into();
+            }
             Err(RollError::Parse(err)) => ***result_text = format!("Parse error: {err}"),
             Err(RollError::Arena(err)) => ***result_text = format!("Arena error: {err:?}"),
+            Err(RollError::Outcome(err)) => ***result_text = format!("Outcome error: {err}"),
         }
     }
 }
@@ -95,8 +108,20 @@ fn on_expression_submitted(
 /// When dice settle, the plugin emits a `RollComplete`; we format it via
 /// `outcome.display(&roll)` which already prints a clean
 /// `"3d6(4,2,1) + 2 = 9"`-style breakdown.
-fn show_result(mut events: MessageReader<RollComplete>, mut text: Single<&mut Text, With<ResultDisplay>>) {
+fn show_result(
+    mut events: MessageReader<RollComplete>,
+    mut failed: MessageReader<RollFailed>,
+    latest: Res<LatestRoll>,
+    mut text: Single<&mut Text, With<ResultDisplay>>,
+) {
     for event in events.read() {
-        ***text = event.outcome.display(&event.roll).to_string();
+        if latest.roll_id == Some(event.roll_id) {
+            ***text = event.outcome.display(&event.roll).to_string();
+        }
+    }
+    for event in failed.read() {
+        if latest.roll_id == Some(event.roll_id) {
+            ***text = format!("Roll error: {}", event.reason);
+        }
     }
 }
