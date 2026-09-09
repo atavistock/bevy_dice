@@ -6,7 +6,7 @@ use bevy::prelude::*;
 
 use crate::dice::DieKind;
 
-use super::orientations::{DiceOrientations, load_orientations, load_orientations_from_bytes};
+use crate::sim::{DiceOrientations, load_orientations, load_orientations_from_bytes};
 
 /// Single source of truth for embedded dicesets. Each entry is
 /// `(feature_name, gltf_bytes)`; add a row to include a new embedded diceset.
@@ -91,6 +91,11 @@ pub(super) struct GltfAssetHandles {
 }
 
 impl GltfAssetHandles {
+    #[cfg(test)]
+    pub fn for_test(mesh: Handle<Mesh>, material: Handle<StandardMaterial>) -> Self {
+        Self { meshes: vec![mesh; DieKind::ALL.len()], materials: vec![material; DieKind::ALL.len()] }
+    }
+
     pub(super) fn mesh(&self, idx: usize) -> Handle<Mesh> {
         self.meshes[idx].clone()
     }

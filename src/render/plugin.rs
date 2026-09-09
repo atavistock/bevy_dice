@@ -6,13 +6,16 @@ use bevy::prelude::*;
 
 use crate::dice::{DiceRoll, DiceTerm, DieKind, Options, RollOutcome, RolledDie};
 
-use super::arena::{DefaultArena, DiceArena, DiceBoxWall, DicePhysicsConfig, SpawnConfig, spawn_arena_walls};
+use super::arena::{DefaultArena, DiceArena, DiceBoxWall, spawn_arena_walls};
+use super::cache::{PrecomputeCache, queue_cached_rolls, update_precompute_cache};
+use super::cached_roll::{CachedRollRequest, PrecomputeRequest, RollFailed};
 use super::diceset::{Diceset, embedded_table, load_diceset_handles};
 use super::pending::{PendingRolls, handle_roll_requests};
 use super::resolve::{despawn_orphaned_dice, prune_orphaned_pending_rolls, resolve_pending_rolls};
 use super::rng::DiceRng;
 use super::roller::{NextRollId, RollComplete, RollRequest};
 use super::spawn::SpawnedDie;
+use crate::sim::{DicePhysicsConfig, SpawnConfig};
 
 /// Adds avian3d physics (unless the host already did), the roll request/complete messages, the
 /// tumble/settle/emit pipeline, and an overhead [`DirectionalLight`] for the
@@ -66,11 +69,15 @@ impl Plugin for DicePlugin {
             app.insert_resource(Gravity(Vec3::new(0.0, gravity, 0.0)));
         }
         app.init_resource::<PendingRolls>()
+            .init_resource::<PrecomputeCache>()
             .init_resource::<NextRollId>()
             .init_resource::<DiceRng>()
             .insert_resource(DiceRenderLayer { layer: render_layer })
             .add_message::<RollRequest>()
             .add_message::<RollComplete>()
+            .add_message::<CachedRollRequest>()
+            .add_message::<PrecomputeRequest>()
+            .add_message::<RollFailed>()
             .register_type::<DiceArena>()
             .register_type::<DefaultArena>()
             .register_type::<DiceBoxWall>()
@@ -90,7 +97,7 @@ impl Plugin for DicePlugin {
                 Update,
                 (
                     spawn_arena_walls,
-                    (load_diceset_handles, handle_roll_requests).chain(),
+                    (load_diceset_handles, handle_roll_requests, queue_cached_rolls, update_precompute_cache).chain(),
                     resolve_pending_rolls,
                     despawn_orphaned_dice,
                     prune_orphaned_pending_rolls,

@@ -11,7 +11,8 @@ use super::diceset::{Diceset, GltfAssetHandles};
 use super::plugin::DiceRenderLayer;
 use super::rng::DiceRng;
 use super::roller::RollRequest;
-use super::spawn::{MAX_DICE_PER_ROLL, member_state, spawn_die, throw_base};
+use super::spawn::{member_state, spawn_die, throw_base};
+use crate::sim::MAX_DICE_PER_ROLL;
 
 pub(super) struct PendingRoll {
     pub arena: Entity,

@@ -11,7 +11,7 @@
 //! Run: `cargo run --example isolated_layer --features plain_white`
 
 use bevy::prelude::*;
-use bevy_dice::ui::{DefaultArena, DiceArena, DicePlugin, DiceRoller, Diceset};
+use bevy_dice::render::{DefaultArena, DiceArena, DicePlugin, DiceRoller, Diceset};
 
 #[path = "common/mod.rs"]
 mod common;
@@ -33,6 +33,7 @@ fn main() {
         ))
         .add_systems(Startup, setup_scene)
         .add_systems(PostStartup, roll_once)
+        .add_plugins(common::SmokeTestPlugin)
         .run();
 }
 

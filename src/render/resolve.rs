@@ -10,12 +10,12 @@ use crate::dice::{DieKind, Modifier, Options, RollOutcome, RolledDie};
 
 use super::arena::DiceArena;
 use super::diceset::Diceset;
-use super::orientations::DiceOrientations;
 use super::pending::{DieRef, PendingRoll, PendingRolls, spawn_term_member};
 use super::plugin::DiceRenderLayer;
 use super::rng::DiceRng;
 use super::roller::RollComplete;
 use super::spawn::SpawnedDie;
+use crate::sim::DiceOrientations;
 
 pub(super) fn despawn_orphaned_dice(
     mut commands: Commands,

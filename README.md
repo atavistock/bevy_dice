@@ -3,6 +3,8 @@
 Physics-driven dice for Bevy 0.18. Parse a dice expression, drop it into an
 arena, watch the dice tumble and settle, read the result.
 
+The public modules are `dice` for expression math, `sim` for headless physics and recordings, and `render` for assets, roll queues, and playback. Simulation has no dependency on the rendering module.
+
 - Math-only roll API for headless use (`DiceRoll::parse`, `roll`,
   `roll_detailed`) with no Bevy dependency on the caller's side beyond the
   crate import.
@@ -80,7 +82,7 @@ dice_expressions --features plain_white` to run it.
 
 ```rust
 use bevy::prelude::*;
-use bevy_dice::ui::RollComplete;
+use bevy_dice::render::RollComplete;
 
 fn report(mut completed: MessageReader<RollComplete>) {
     for event in completed.read() {
@@ -102,7 +104,7 @@ use `cargo run --example dice_expressions --features plain_white` to run it.
 ## Custom arenas
 
 ```rust
-use bevy_dice::ui::{DefaultArena, DiceArena, Diceset};
+use bevy_dice::render::{DefaultArena, DiceArena, Diceset};
 
 fn setup(mut commands: Commands) {
     let diceset = commands.spawn(Diceset::embedded("halloween")).id();
@@ -128,6 +130,12 @@ same world. They can share a single `Diceset` (one mesh load, one
 orientation table, one spawn). Tag at most one with `DefaultArena`; use
 `DiceRoller::roll_in(arena_entity, roll)` to target a specific one.
 
+`DiceRoller` plays precomputed throws from a two-entry queue per arena and canonical physical dice composition. Adjustments and term order share recordings; modifiers animate their final contributing dice. Empty queues wait for background refill, and rolls in the same arena play in submission order. Physics runs at 64 Hz; separate packed position and rotation arrays record at 32 Hz and interpolate during playback. Three seconds of poses occupy 2,716 bytes per physical die, excluding queue metadata and shared geometry. Native builds refill one throw at a time on Bevy's background task pool; browser worker support is not implemented. Crowded arenas can require repeated attempts; use sufficient floor space for large throws, such as a 12 by 10 arena for 20 d20s.
+
+Use `roller.precompute_in(arena, &roll)` to warm a queue before the first throw, or `roller.roll_in_with_outcome(arena, &roll, outcome)` to supply server results. A geometry-preserving local rotation selects the requested faces before playback begins. `RollComplete` reports completion; `RollFailed` reports invalid inputs, unavailable assets, or interrupted playback. An empty queue or an unsuccessful settling attempt keeps the request pending. Arena physics or asset changes invalidate recordings. Direct `RollRequest` messages retain the live physics path.
+
+Set `BEVY_DICE_SMOKE_SCREENSHOT=/tmp/dice.png` when running an example to submit its demonstration roll, verify completion, capture the rendered result, and exit. The expression example submits `3d6+2`; both arenas must complete in `two_arenas`.
+
 ## Render layers
 
 By default, every dice entity and its overhead light spawn on render layer
@@ -146,7 +154,7 @@ camera includes both the scene layer and the dice layer:
 ```rust
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
-use bevy_dice::ui::{DefaultArena, DiceArena, DicePlugin, Diceset};
+use bevy_dice::render::{DefaultArena, DiceArena, DicePlugin, Diceset};
 
 const DICE_LAYER: u8 = 1;
 
@@ -207,7 +215,7 @@ wraps `StdRng::from_entropy()`. For deterministic playback in tests, insert
 a seeded one:
 
 ```rust
-use bevy_dice::ui::DiceRng;
+use bevy_dice::render::DiceRng;
 app.insert_resource(DiceRng::from_seed(0xD1CE));
 ```
 
