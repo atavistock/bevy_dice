@@ -141,7 +141,7 @@ fn keep(rolls: &mut Vec<u32>, count: u32, highest: bool) {
         return;
     }
     if highest {
-        rolls.sort_unstable_by(|a, b| b.cmp(a));
+        rolls.sort_unstable_by(|first, second| second.cmp(first));
     } else {
         rolls.sort_unstable();
     }
@@ -197,7 +197,7 @@ mod tests {
     fn reroll_replaces_low_values_until_above_threshold() {
         let mut rolls = vec![1, 1, 6];
         Options::default().with_reroll_at_or_below(1).apply(DieKind::D6, &mut rolls, &mut rng());
-        assert!(rolls.iter().all(|&r| r > 1));
+        assert!(rolls.iter().all(|&roll| roll > 1));
         assert_eq!(rolls.len(), 3);
     }
 
@@ -218,7 +218,7 @@ mod tests {
             &mut rng(),
         );
         assert!(rolls.len() > 4);
-        assert!(rolls.iter().all(|&r| r > 3), "{rolls:?}");
+        assert!(rolls.iter().all(|&roll| roll > 3), "{rolls:?}");
     }
 
     #[test]

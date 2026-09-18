@@ -48,12 +48,12 @@ impl DieKind {
 
     /// Looks up a kind by face count. Returns `None` for non-standard counts.
     pub fn from_sides(sides: u32) -> Option<DieKind> {
-        DieKind::ALL.iter().copied().find(|k| k.sides() == sides)
+        DieKind::ALL.iter().copied().find(|kind| kind.sides() == sides)
     }
 
     /// Looks up a kind by gltf asset name (`"d4"`, `"d6"`, ...).
     pub fn from_asset_name(name: &str) -> Option<DieKind> {
-        DieKind::ALL.iter().copied().find(|k| k.asset_name() == name)
+        DieKind::ALL.iter().copied().find(|kind| kind.asset_name() == name)
     }
 
     /// Index into [`DieKind::ALL`] / the diceset gltf's primitive order.
@@ -73,8 +73,8 @@ impl DieKind {
 }
 
 impl fmt::Display for DieKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "d{}", self.sides())
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "d{}", self.sides())
     }
 }
 

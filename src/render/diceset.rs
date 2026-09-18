@@ -10,7 +10,7 @@ use crate::sim::{DiceOrientations, load_orientations, load_orientations_from_byt
 
 /// Single source of truth for embedded dicesets. Each entry is
 /// `(feature_name, gltf_bytes)`; add a row to include a new embedded diceset.
-pub(super) fn embedded_table() -> &'static [(&'static str, &'static [u8])] {
+pub fn embedded_table() -> &'static [(&'static str, &'static [u8])] {
     &[
         #[cfg(feature = "plain_white")]
         ("plain_white", include_bytes!("../../assets/plain_white_diceset.glb")),
@@ -36,7 +36,7 @@ pub struct Diceset {
     pub orientations: DiceOrientations,
     /// Cached mesh + material handles, populated by [`load_diceset_handles`].
     #[reflect(ignore)]
-    pub(super) handles: Option<GltfAssetHandles>,
+    pub handles: Option<GltfAssetHandles>,
 }
 
 impl Diceset {
@@ -78,14 +78,14 @@ impl Diceset {
 
     /// Cached handles for this diceset, populated once [`load_diceset_handles`]
     /// has run. Returns `None` if loading hasn't happened yet.
-    pub(super) fn handles(&self) -> Option<&GltfAssetHandles> {
+    pub fn handles(&self) -> Option<&GltfAssetHandles> {
         self.handles.as_ref()
     }
 }
 
 /// Mesh + material handles for every [`DieKind`], indexed by [`DieKind::mesh_index`].
 #[derive(Clone)]
-pub(super) struct GltfAssetHandles {
+pub struct GltfAssetHandles {
     asset_path: String,
     meshes: Vec<Handle<Mesh>>,
     materials: Vec<Handle<StandardMaterial>>,
@@ -101,20 +101,17 @@ impl GltfAssetHandles {
         }
     }
 
-    pub(super) fn mesh(&self, idx: usize) -> Handle<Mesh> {
+    pub fn mesh(&self, idx: usize) -> Handle<Mesh> {
         self.meshes[idx].clone()
     }
 
-    pub(super) fn material(&self, idx: usize) -> Handle<StandardMaterial> {
+    pub fn material(&self, idx: usize) -> Handle<StandardMaterial> {
         self.materials[idx].clone()
     }
 }
 
 /// Loads handles when a diceset is initialized, replaced, or changes asset paths.
-pub(super) fn load_diceset_handles(
-    mut dicesets: Query<&mut Diceset, Changed<Diceset>>,
-    asset_server: Res<AssetServer>,
-) {
+pub fn load_diceset_handles(mut dicesets: Query<&mut Diceset, Changed<Diceset>>, asset_server: Res<AssetServer>) {
     for mut diceset in dicesets.iter_mut() {
         if diceset.handles.as_ref().is_some_and(|handles| handles.asset_path == diceset.asset_path) {
             continue;

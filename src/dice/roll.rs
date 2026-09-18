@@ -21,19 +21,19 @@ pub struct DiceTerm {
 
 impl DiceTerm {
     /// Writes `NdK` plus option suffixes (`kh2`, `kl1`, `r1`, `e6`) without a sign.
-    fn fmt_unsigned(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}d{}", self.count, self.kind.sides())?;
+    fn fmt_unsigned(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}d{}", self.count, self.kind.sides())?;
         if let Some(count) = self.options.keep_highest {
-            write!(f, "kh{count}")?;
+            write!(formatter, "kh{count}")?;
         }
         if let Some(count) = self.options.keep_lowest {
-            write!(f, "kl{count}")?;
+            write!(formatter, "kl{count}")?;
         }
         if let Some(threshold) = self.options.reroll_at_or_below {
-            write!(f, "r{threshold}")?;
+            write!(formatter, "r{threshold}")?;
         }
         if let Some(threshold) = self.options.explode_at_or_above {
-            write!(f, "e{threshold}")?;
+            write!(formatter, "e{threshold}")?;
         }
         Ok(())
     }
@@ -41,9 +41,9 @@ impl DiceTerm {
 
 /// Renders as `"+3d6"` / `"-1d4"` / `"+4d6kh3"`; the leading sign is always present.
 impl fmt::Display for DiceTerm {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", if self.negate { '-' } else { '+' })?;
-        self.fmt_unsigned(f)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", if self.negate { '-' } else { '+' })?;
+        self.fmt_unsigned(formatter)
     }
 }
 
@@ -64,21 +64,21 @@ impl From<&DiceRoll> for DiceRoll {
 
 /// Renders as `"3d6+2"` / `"1d20-1d4+5"` / `"2d20kh1+5"`; no sign on the first term.
 impl fmt::Display for DiceRoll {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (index, term) in self.terms.iter().enumerate() {
             if index == 0 {
                 if term.negate {
-                    write!(f, "-")?;
+                    write!(formatter, "-")?;
                 }
-                term.fmt_unsigned(f)?;
+                term.fmt_unsigned(formatter)?;
             } else {
-                write!(f, "{term}")?;
+                write!(formatter, "{term}")?;
             }
         }
         if self.terms.is_empty() {
-            write!(f, "{}", self.adjustment)
+            write!(formatter, "{}", self.adjustment)
         } else if self.adjustment != 0 {
-            write!(f, "{:+}", self.adjustment)
+            write!(formatter, "{:+}", self.adjustment)
         } else {
             Ok(())
         }
@@ -138,30 +138,31 @@ pub struct RollOutcomeDisplay<'a> {
 }
 
 impl<'a> fmt::Display for RollOutcomeDisplay<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
         for (term_index, term) in self.roll.terms.iter().enumerate() {
-            let values: Vec<String> = self.outcome.term_dice(term_index).iter().map(|d| d.value.to_string()).collect();
+            let values: Vec<String> =
+                self.outcome.term_dice(term_index).iter().map(|die| die.value.to_string()).collect();
             if first {
                 if term.negate {
-                    write!(f, "-")?;
+                    write!(formatter, "-")?;
                 }
                 first = false;
             } else {
-                write!(f, "{}", if term.negate { " - " } else { " + " })?;
+                write!(formatter, "{}", if term.negate { " - " } else { " + " })?;
             }
-            write!(f, "{}d{}({})", term.count, term.kind.sides(), values.join(","))?;
+            write!(formatter, "{}d{}({})", term.count, term.kind.sides(), values.join(","))?;
         }
         if self.roll.adjustment != 0 {
             if first {
-                write!(f, "{}", self.roll.adjustment)?;
+                write!(formatter, "{}", self.roll.adjustment)?;
             } else if self.roll.adjustment > 0 {
-                write!(f, " + {}", self.roll.adjustment)?;
+                write!(formatter, " + {}", self.roll.adjustment)?;
             } else {
-                write!(f, " - {}", self.roll.adjustment.unsigned_abs())?;
+                write!(formatter, " - {}", self.roll.adjustment.unsigned_abs())?;
             }
         }
-        write!(f, " = {}", self.outcome.total)
+        write!(formatter, " = {}", self.outcome.total)
     }
 }
 
@@ -268,8 +269,8 @@ mod tests {
         assert_eq!(outcome.term_lengths, vec![2, 3]);
         assert_eq!(outcome.term_dice(0).len(), 2);
         assert_eq!(outcome.term_dice(1).len(), 3);
-        assert!(outcome.term_dice(0).iter().all(|d| d.kind == DieKind::D6));
-        assert!(outcome.term_dice(1).iter().all(|d| d.kind == DieKind::D4));
+        assert!(outcome.term_dice(0).iter().all(|die| die.kind == DieKind::D6));
+        assert!(outcome.term_dice(1).iter().all(|die| die.kind == DieKind::D4));
     }
 
     #[test]
@@ -293,16 +294,16 @@ mod tests {
         let roll = DiceRoll::parse("3d6").unwrap();
         let outcome = roll.roll_detailed(&mut rng());
         assert_eq!(outcome.dice.len(), 3);
-        assert!(outcome.dice.iter().all(|d| d.kind == DieKind::D6));
-        assert!(outcome.dice.iter().all(|d| !d.negate));
+        assert!(outcome.dice.iter().all(|die| die.kind == DieKind::D6));
+        assert!(outcome.dice.iter().all(|die| !die.negate));
     }
 
     #[test]
     fn negated_term_marks_dice_and_subtracts_from_total() {
         let roll = DiceRoll::parse("1d20-1d4").unwrap();
         let outcome = roll.roll_detailed(&mut rng());
-        let positive: i32 = outcome.dice.iter().filter(|d| !d.negate).map(|d| d.value as i32).sum();
-        let negative: i32 = outcome.dice.iter().filter(|d| d.negate).map(|d| d.value as i32).sum();
+        let positive: i32 = outcome.dice.iter().filter(|die| !die.negate).map(|die| die.value as i32).sum();
+        let negative: i32 = outcome.dice.iter().filter(|die| die.negate).map(|die| die.value as i32).sum();
         assert_eq!(outcome.total, positive - negative);
     }
 

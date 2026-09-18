@@ -45,8 +45,7 @@ impl Default for DicePhysicsConfig {
     }
 }
 
-/// Tunables for the throw arc when dice enter an arena. Each die spawns
-/// just outside one X wall and is given an inward velocity plus random spin.
+/// Tunables for the throw when dice enter an arena.
 #[derive(Clone, Reflect)]
 pub struct SpawnConfig {
     /// Height above the box ceiling where dice begin their arc.

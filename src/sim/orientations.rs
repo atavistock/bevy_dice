@@ -2,22 +2,29 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use bevy::log::warn;
 use bevy::math::{Quat, Vec3};
 
 use crate::dice::DieKind;
 
-/// Per-kind face directions (local space), keyed by face label.
-#[derive(Default, Clone)]
+/// Per-kind face directions (local space), keyed by face label. Clones share one table.
+#[derive(Default, Clone, Debug)]
 pub struct DiceOrientations {
-    by_kind: HashMap<DieKind, Vec<(String, Vec3)>>,
+    by_kind: Arc<HashMap<DieKind, Vec<(String, Vec3)>>>,
+}
+
+impl PartialEq for DiceOrientations {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.by_kind, &other.by_kind) || self.by_kind == other.by_kind
+    }
 }
 
 impl DiceOrientations {
     /// All `(label, local-direction)` pairs for `kind`.
     pub fn faces(&self, kind: DieKind) -> &[(String, Vec3)] {
-        self.by_kind.get(&kind).map(|v| v.as_slice()).unwrap_or(&[])
+        self.by_kind.get(&kind).map(|faces| faces.as_slice()).unwrap_or(&[])
     }
 
     /// Label of the face that points most toward +Y after `rotation`.
@@ -55,7 +62,9 @@ pub fn load_orientations_from_bytes(bytes: &[u8]) -> DiceOrientations {
         warn!("could not parse gltf bytes");
         return DiceOrientations::default();
     };
-    let Some(table) = json.get("extras").and_then(|e| e.get("dice_orientations")).and_then(|d| d.as_object()) else {
+    let Some(table) =
+        json.get("extras").and_then(|extras| extras.get("dice_orientations")).and_then(|table| table.as_object())
+    else {
         return DiceOrientations::default();
     };
     let mut by_kind: HashMap<DieKind, Vec<(String, Vec3)>> = HashMap::new();
@@ -77,7 +86,7 @@ pub fn load_orientations_from_bytes(bytes: &[u8]) -> DiceOrientations {
             by_kind.entry(kind).or_default().push((label.clone(), raw.normalize()));
         }
     }
-    DiceOrientations { by_kind }
+    DiceOrientations { by_kind: Arc::new(by_kind) }
 }
 
 fn extract_gltf_json(bytes: &[u8]) -> Option<&[u8]> {

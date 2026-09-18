@@ -24,7 +24,7 @@ use super::{
     cached_roll::{
         PrecomputeRequest, RollFailed, RollFailure, RollRequest, base_composition, validate_outcome, validate_roll,
     },
-    diceset::Diceset,
+    diceset::{Diceset, GltfAssetHandles},
     plugin::DiceRenderLayer,
     rng::{DiceRng, DiceSimulationRng},
     roller::RollComplete,
@@ -63,6 +63,13 @@ struct CacheJob {
     key: CacheKey,
     template: Arc<SimulationTemplate>,
     task: Task<Result<JobOutput, RollFailure>>,
+}
+
+struct ReadyThrow {
+    template: Arc<SimulationTemplate>,
+    recording: RecordedThrow,
+    rotations: Vec<Quat>,
+    handles: GltfAssetHandles,
 }
 
 struct Playback {
@@ -127,13 +134,11 @@ impl PrecomputeCache {
         self.shared_geometry.invalidate(&self.modified_meshes);
         self.entries.retain(|key, _| world.get::<super::arena::DiceArena>(key.arena).is_some());
         for (key, entry) in self.entries.iter_mut() {
-            let changed_mesh = entry.template.as_ref().is_some_and(|template| {
-                let Some(diceset) = world.get::<Diceset>(template.arena.diceset) else { return true };
-                let Some(handles) = diceset.handles() else { return true };
-                key.kinds.iter().any(|kind| self.modified_meshes.contains(&handles.mesh(kind.mesh_index()).id()))
-            });
             let stamp = current_stamp(world, key);
-            let unchanged = matches!(&stamp, Ok(Some(stamp)) if !changed_mesh && entry.template.as_ref().is_some_and(|template| &template.stamp == stamp));
+            let unchanged = match (&stamp, &entry.template) {
+                (Ok(Some(stamp)), Some(template)) => template.stamp == *stamp && !stamp.uses_any(&self.modified_meshes),
+                _ => false,
+            };
             if unchanged {
                 continue;
             }
@@ -142,25 +147,15 @@ impl PrecomputeCache {
             entry.ready.clear();
             entry.geometry = None;
             entry.template = None;
-            match stamp {
-                Err(err) => {
-                    entry.failure = Some(err);
-                }
-                Ok(None) => {
-                    entry.failure = None;
-                }
-                Ok(Some(_)) => match snapshot(world, key, &mut self.shared_geometry) {
-                    Ok(Some(template)) => {
-                        entry.template = Some(Arc::new(template));
-                        entry.failure = None;
-                    }
-                    Ok(None) => {
-                        entry.failure = None;
-                    }
-                    Err(err) => {
-                        entry.failure = Some(err);
-                    }
-                },
+            entry.failure = None;
+            let template = match stamp {
+                Ok(Some(stamp)) => snapshot(world, key, stamp, &mut self.shared_geometry).map(Some),
+                Ok(None) => Ok(None),
+                Err(err) => Err(err),
+            };
+            match template {
+                Ok(template) => entry.template = template.map(Arc::new),
+                Err(err) => entry.failure = Some(err),
             }
         }
         self.modified_meshes.clear();
@@ -298,87 +293,79 @@ impl PrecomputeCache {
 
     fn start_ready(&mut self, world: &mut World) {
         let mut blocked: HashSet<Entity> = self.active.keys().copied().collect();
-        let count = self.pending.len();
-        for _ in 0..count {
+        for _ in 0..self.pending.len() {
             let Some(request) = self.pending.pop_front() else { break };
             if blocked.contains(&request.arena) {
                 self.pending.push_back(request);
                 continue;
             }
-            if world.get::<super::arena::DiceArena>(request.arena).is_none() {
-                fail(world, &request, RollFailure::MissingArena);
-                continue;
-            }
-            let Some(entry) = self.entries.get_mut(&request.key) else {
-                fail(world, &request, RollFailure::MissingArena);
-                continue;
-            };
-            if let Some(reason) = entry.failure.clone()
-                && entry.ready.is_empty()
-            {
-                fail(world, &request, reason);
-                continue;
-            }
-            let prepared = entry.template.clone().zip(entry.geometry.clone());
-            let Some((template, geometry)) = prepared else {
-                blocked.insert(request.arena);
-                self.pending.push_back(request);
-                continue;
-            };
-            let Some(recording) = entry.ready.pop_front() else {
-                blocked.insert(request.arena);
-                self.pending.push_back(request);
-                continue;
-            };
-            let rotations = match corrections(&template, &geometry, &recording, &request.values) {
-                Ok(rotations) => rotations,
-                Err(reason) => {
-                    fail(world, &request, reason);
-                    continue;
+            match self.take_ready(world, &request) {
+                Ok(Some(throw)) => {
+                    blocked.insert(request.arena);
+                    self.active.insert(request.arena, spawn_playback(world, request, throw));
                 }
-            };
-            let Some(diceset) = world.get::<Diceset>(template.arena.diceset) else {
-                fail(world, &request, RollFailure::MissingDiceset);
-                continue;
-            };
-            let Some(handles) = diceset.handles().cloned() else {
-                fail(world, &request, RollFailure::AssetUnavailable);
-                continue;
-            };
-            let layer = world
-                .get::<super::arena::DiceArena>(request.arena)
-                .and_then(|arena| arena.render_layer)
-                .unwrap_or(world.resource::<DiceRenderLayer>().layer);
-            let previous: Vec<Entity> = world
-                .query::<(Entity, &CachedDie)>()
-                .iter(world)
-                .filter(|(_, die)| die.arena == request.arena)
-                .map(|(entity, _)| entity)
-                .collect();
-            for entity in previous {
-                world.despawn(entity);
+                Ok(None) => {
+                    blocked.insert(request.arena);
+                    self.pending.push_back(request);
+                }
+                Err(reason) => fail(world, &request, reason),
             }
-            let mut entities = Vec::with_capacity(recording.kinds.len());
-            for (body, kind) in recording.kinds.iter().enumerate() {
-                let Some((position, rotation)) = recording.pose(body, 0.0) else { continue };
-                entities.push(
-                    world
-                        .spawn((
-                            CachedDie { arena: request.arena },
-                            SpawnedDie { kind: *kind, arena: request.arena },
-                            Mesh3d(handles.mesh(kind.mesh_index())),
-                            MeshMaterial3d(handles.material(kind.mesh_index())),
-                            Transform::from_translation(position).with_rotation(rotation * rotations[body]),
-                            RenderLayers::layer(layer as usize),
-                        ))
-                        .id(),
-                );
-            }
-            blocked.insert(request.arena);
-            self.active
-                .insert(request.arena, Playback { request, template, recording, rotations, entities, elapsed: 0.0 });
         }
     }
+
+    /// Takes the next recording once the request can play it; `None` while the queue is cold.
+    fn take_ready(&mut self, world: &World, request: &PendingPresentation) -> Result<Option<ReadyThrow>, RollFailure> {
+        if world.get::<super::arena::DiceArena>(request.arena).is_none() {
+            return Err(RollFailure::MissingArena);
+        }
+        let entry = self.entries.get_mut(&request.key).ok_or(RollFailure::MissingArena)?;
+        if let Some(reason) = entry.failure.clone()
+            && entry.ready.is_empty()
+        {
+            return Err(reason);
+        }
+        let Some((template, geometry)) = entry.template.clone().zip(entry.geometry.clone()) else { return Ok(None) };
+        let Some(recording) = entry.ready.front() else { return Ok(None) };
+        let rotations = corrections(&template, &geometry, recording, &request.values)?;
+        let diceset = world.get::<Diceset>(template.arena.diceset).ok_or(RollFailure::MissingDiceset)?;
+        let handles = diceset.handles().cloned().ok_or(RollFailure::AssetUnavailable)?;
+        Ok(entry.ready.pop_front().map(|recording| ReadyThrow { template, recording, rotations, handles }))
+    }
+}
+
+/// Replaces the arena's previous dice and starts playback at the first recorded pose.
+fn spawn_playback(world: &mut World, request: PendingPresentation, throw: ReadyThrow) -> Playback {
+    let ReadyThrow { template, recording, rotations, handles } = throw;
+    let layer = world
+        .get::<super::arena::DiceArena>(request.arena)
+        .and_then(|arena| arena.render_layer)
+        .unwrap_or(world.resource::<DiceRenderLayer>().layer);
+    let previous: Vec<Entity> = world
+        .query::<(Entity, &CachedDie)>()
+        .iter(world)
+        .filter(|(_, die)| die.arena == request.arena)
+        .map(|(entity, _)| entity)
+        .collect();
+    for entity in previous {
+        world.despawn(entity);
+    }
+    let mut entities = Vec::with_capacity(recording.kinds.len());
+    for (body, kind) in recording.kinds.iter().enumerate() {
+        let Some((position, rotation)) = recording.pose(body, 0.0) else { continue };
+        entities.push(
+            world
+                .spawn((
+                    CachedDie { arena: request.arena },
+                    SpawnedDie { kind: *kind, arena: request.arena },
+                    Mesh3d(handles.mesh(kind.mesh_index())),
+                    MeshMaterial3d(handles.material(kind.mesh_index())),
+                    Transform::from_translation(position).with_rotation(rotation * rotations[body]),
+                    RenderLayers::layer(layer as usize),
+                ))
+                .id(),
+        );
+    }
+    Playback { request, template, recording, rotations, entities, elapsed: 0.0 }
 }
 
 fn physical_dice(outcome: &RollOutcome) -> (Vec<DieKind>, Vec<u32>) {
@@ -456,7 +443,6 @@ pub fn update_precompute_cache(world: &mut World) {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::super::diceset::GltfAssetHandles;
     use super::*;
     use crate::dice::RolledDie;
     use crate::render::DiceArena;

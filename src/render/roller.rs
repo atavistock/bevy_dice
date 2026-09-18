@@ -40,12 +40,12 @@ pub enum RollError {
 }
 
 impl fmt::Display for RollError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RollError::Outcome(err) => write!(f, "invalid outcome: {err}"),
-            RollError::Parse(err) => write!(f, "parse error: {err}"),
-            RollError::Arena(NoDefaultArena::None) => write!(f, "no DefaultArena in the world"),
-            RollError::Arena(NoDefaultArena::Ambiguous) => write!(f, "multiple DefaultArenas in the world"),
+            RollError::Outcome(err) => write!(formatter, "invalid outcome: {err}"),
+            RollError::Parse(err) => write!(formatter, "parse error: {err}"),
+            RollError::Arena(NoDefaultArena::None) => write!(formatter, "no DefaultArena in the world"),
+            RollError::Arena(NoDefaultArena::Ambiguous) => write!(formatter, "multiple DefaultArenas in the world"),
         }
     }
 }
@@ -72,7 +72,7 @@ impl From<OutcomeError> for RollError {
 
 /// Monotonic roll-id counter shared by [`DiceRoller`].
 #[derive(Resource, Default)]
-pub(super) struct NextRollId {
+pub struct NextRollId {
     pub value: u64,
 }
 
@@ -146,7 +146,7 @@ impl<'w, 's> DiceRoller<'w, 's> {
         Ok(())
     }
 
-    /// Parses `expr` and submits to the [`DefaultArena`]. Combined parse +
+    /// Parses `expression` and submits to the [`DefaultArena`]. Combined parse +
     /// roll for one-liner call sites.
     ///
     /// ```no_run
@@ -155,14 +155,14 @@ impl<'w, 's> DiceRoller<'w, 's> {
     ///     let _ = roller.roll_expr("3d6+2");
     /// }
     /// ```
-    pub fn roll_expr(&mut self, expr: &str) -> Result<u64, RollError> {
-        let roll = DiceRoll::parse(expr)?;
+    pub fn roll_expr(&mut self, expression: &str) -> Result<u64, RollError> {
+        let roll = DiceRoll::parse(expression)?;
         Ok(self.roll(roll)?)
     }
 
-    /// Parses `expr` and submits to `arena`.
-    pub fn roll_expr_in(&mut self, arena: Entity, expr: &str) -> Result<u64, RollError> {
-        let roll = DiceRoll::parse(expr)?;
+    /// Parses `expression` and submits to `arena`.
+    pub fn roll_expr_in(&mut self, arena: Entity, expression: &str) -> Result<u64, RollError> {
+        let roll = DiceRoll::parse(expression)?;
         Ok(self.roll_in(arena, roll))
     }
 }

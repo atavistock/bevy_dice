@@ -23,12 +23,19 @@ pub struct CacheKey {
     pub kinds: Vec<DieKind>,
 }
 
+/// Simulation inputs of an arena; meshes are indexed by [`DieKind::mesh_index`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArenaStamp {
-    configuration: Vec<u32>,
+    configuration: [u32; 24],
     diceset: Entity,
-    meshes: Vec<AssetId<Mesh>>,
-    faces: Vec<Vec<(String, [u32; 3])>>,
+    meshes: [Option<AssetId<Mesh>>; DieKind::ALL.len()],
+    orientations: DiceOrientations,
+}
+
+impl ArenaStamp {
+    pub fn uses_any(&self, meshes: &HashSet<AssetId<Mesh>>) -> bool {
+        !meshes.is_empty() && self.meshes.iter().flatten().any(|mesh| meshes.contains(mesh))
+    }
 }
 
 #[derive(Clone)]
@@ -97,9 +104,12 @@ pub fn current_stamp(world: &World, key: &CacheKey) -> Result<Option<ArenaStamp>
     let meshes = world.get_resource::<Assets<Mesh>>();
     let materials = world.get_resource::<Assets<StandardMaterial>>();
     let asset_server = world.get_resource::<AssetServer>();
-    let mut mesh_ids = Vec::with_capacity(key.kinds.len());
+    let mut mesh_ids = [None; DieKind::ALL.len()];
     let mut ready = true;
     for kind in key.kinds.iter() {
+        if mesh_ids[kind.mesh_index()].is_some() {
+            continue;
+        }
         let mesh = handles.mesh(kind.mesh_index());
         let material = handles.material(kind.mesh_index());
         let mesh_loaded = asset_ready(asset_server, mesh.id().untyped())?;
@@ -111,38 +121,43 @@ pub fn current_stamp(world: &World, key: &CacheKey) -> Result<Option<ArenaStamp>
         {
             ready = false;
         }
-        mesh_ids.push(mesh.id());
+        mesh_ids[kind.mesh_index()] = Some(mesh.id());
     }
-    Ok(ready.then(|| make_stamp(arena, gravity(world), mesh_ids, &key.kinds, &diceset.orientations)))
+    Ok(ready.then(|| make_stamp(arena, gravity(world), mesh_ids, &diceset.orientations)))
 }
 
 /// Copy ready mesh positions and arena inputs for use outside the main world.
 pub fn snapshot(
     world: &World,
     key: &CacheKey,
+    stamp: ArenaStamp,
     shared: &mut GeometryCache,
-) -> Result<Option<SimulationTemplate>, RollFailure> {
-    let Some(stamp) = current_stamp(world, key)? else { return Ok(None) };
+) -> Result<SimulationTemplate, RollFailure> {
     let arena = world.get::<DiceArena>(key.arena).ok_or(RollFailure::MissingArena)?;
-    let diceset = world.get::<Diceset>(arena.diceset).ok_or(RollFailure::MissingDiceset)?;
     let meshes = world.get_resource::<Assets<Mesh>>().ok_or(RollFailure::AssetUnavailable)?;
+    let mut by_kind: [Option<Arc<SharedGeometry>>; DieKind::ALL.len()] = Default::default();
     let mut geometry = Vec::with_capacity(key.kinds.len());
-    for (index, kind) in key.kinds.iter().enumerate() {
-        geometry.push(
-            shared.get(
-                GeometryKey { mesh: stamp.meshes[index], kind: *kind, faces: stamp.faces[index].clone() },
-                meshes,
-            )?,
-        );
+    for kind in key.kinds.iter() {
+        let shared_geometry = match &by_kind[kind.mesh_index()] {
+            Some(shared_geometry) => shared_geometry.clone(),
+            None => {
+                let mesh = stamp.meshes[kind.mesh_index()].ok_or(RollFailure::AssetUnavailable)?;
+                let faces = face_bits(stamp.orientations.faces(*kind));
+                let shared_geometry = shared.get(GeometryKey { mesh, kind: *kind, faces }, meshes)?;
+                by_kind[kind.mesh_index()] = Some(shared_geometry.clone());
+                shared_geometry
+            }
+        };
+        geometry.push(shared_geometry);
     }
-    Ok(Some(SimulationTemplate {
+    Ok(SimulationTemplate {
         arena: arena.clone(),
         kinds: key.kinds.clone(),
         gravity: gravity(world),
         geometry,
-        orientations: diceset.orientations.clone(),
+        orientations: stamp.orientations.clone(),
         stamp,
-    }))
+    })
 }
 
 /// Construct each distinct collider and symmetry lookup once in the background.
@@ -199,9 +214,7 @@ pub fn corrections(
 }
 
 fn gravity(world: &World) -> Vec3 {
-    world
-        .get_resource::<super::plugin::DiceSimulationGravity>()
-        .map_or(Vec3::NEG_Y * 23.1, |gravity| gravity.acceleration)
+    world.get_resource::<super::plugin::DiceSimulationGravity>().copied().unwrap_or_default().acceleration
 }
 
 fn asset_ready(asset_server: Option<&AssetServer>, id: UntypedAssetId) -> Result<bool, RollFailure> {
@@ -220,48 +233,44 @@ fn asset_ready(asset_server: Option<&AssetServer>, id: UntypedAssetId) -> Result
         ))
 }
 
+fn face_bits(faces: &[(String, Vec3)]) -> Vec<(String, [u32; 3])> {
+    faces.iter().map(|(label, direction)| (label.clone(), direction.to_array().map(f32::to_bits))).collect()
+}
+
 fn make_stamp(
     arena: &DiceArena,
     gravity: Vec3,
-    meshes: Vec<AssetId<Mesh>>,
-    kinds: &[DieKind],
+    meshes: [Option<AssetId<Mesh>>; DieKind::ALL.len()],
     orientations: &DiceOrientations,
 ) -> ArenaStamp {
-    let mut configuration = Vec::with_capacity(24);
-    for vector in [arena.center, arena.size, gravity] {
-        configuration.extend(vector.to_array().map(f32::to_bits));
-    }
-    configuration.extend(
-        [
-            arena.physics.restitution,
-            arena.physics.friction,
-            arena.physics.angular_damping,
-            arena.physics.linear_damping,
-            arena.spawn.height_above_box,
-            arena.spawn.speed,
-            arena.spawn.outside_box_buffer,
-            arena.spawn.z_spread_fraction,
-            arena.spawn.y_jitter,
-            arena.spawn.speed_min_factor,
-            arena.spawn.speed_jitter,
-            arena.spawn.vertical_velocity_fraction,
-            arena.spawn.z_velocity_jitter_fraction,
-            arena.spawn.angular_speed_factor,
-            arena.spawn.pair_z_offset,
-        ]
-        .map(f32::to_bits),
-    );
-    let faces = kinds
-        .iter()
-        .map(|kind| {
-            orientations
-                .faces(*kind)
-                .iter()
-                .map(|(label, direction)| (label.clone(), direction.to_array().map(f32::to_bits)))
-                .collect()
-        })
-        .collect();
-    ArenaStamp { configuration, diceset: arena.diceset, meshes, faces }
+    let configuration = [
+        arena.center.x,
+        arena.center.y,
+        arena.center.z,
+        arena.size.x,
+        arena.size.y,
+        arena.size.z,
+        gravity.x,
+        gravity.y,
+        gravity.z,
+        arena.physics.restitution,
+        arena.physics.friction,
+        arena.physics.angular_damping,
+        arena.physics.linear_damping,
+        arena.spawn.height_above_box,
+        arena.spawn.speed,
+        arena.spawn.outside_box_buffer,
+        arena.spawn.z_spread_fraction,
+        arena.spawn.y_jitter,
+        arena.spawn.speed_min_factor,
+        arena.spawn.speed_jitter,
+        arena.spawn.vertical_velocity_fraction,
+        arena.spawn.z_velocity_jitter_fraction,
+        arena.spawn.angular_speed_factor,
+        arena.spawn.pair_z_offset,
+    ]
+    .map(f32::to_bits);
+    ArenaStamp { configuration, diceset: arena.diceset, meshes, orientations: orientations.clone() }
 }
 
 #[cfg(test)]
@@ -286,7 +295,7 @@ mod tests {
         }
         let kinds = vec![DieKind::D6, DieKind::D6];
         let gravity = Vec3::NEG_Y * 23.1;
-        let stamp = make_stamp(&arena, gravity, Vec::new(), &kinds, &orientations);
+        let stamp = make_stamp(&arena, gravity, Default::default(), &orientations);
         let geometry = Arc::new(SharedGeometry { vertices: vertices.into_boxed_slice(), prepared: OnceLock::new() });
         SimulationTemplate { arena, kinds, gravity, geometry: vec![geometry.clone(), geometry], orientations, stamp }
     }
@@ -296,10 +305,10 @@ mod tests {
         let mut template = template();
         template.arena.name = "renamed".into();
         template.arena.render_layer = Some(3);
-        let stamp = make_stamp(&template.arena, template.gravity, Vec::new(), &template.kinds, &template.orientations);
+        let stamp = make_stamp(&template.arena, template.gravity, Default::default(), &template.orientations);
         assert_eq!(stamp, template.stamp);
         template.arena.spawn.speed += 1.0;
-        let stamp = make_stamp(&template.arena, template.gravity, Vec::new(), &template.kinds, &template.orientations);
+        let stamp = make_stamp(&template.arena, template.gravity, Default::default(), &template.orientations);
         assert_ne!(stamp, template.stamp);
     }
 
@@ -319,7 +328,8 @@ mod tests {
         let mut meshes = Assets::<Mesh>::default();
         let mesh = meshes.add(Cuboid::new(2.0, 2.0, 2.0));
         let template = template();
-        let mut key = GeometryKey { mesh: mesh.id(), kind: DieKind::D6, faces: template.stamp.faces[0].clone() };
+        let faces = face_bits(template.orientations.faces(DieKind::D6));
+        let mut key = GeometryKey { mesh: mesh.id(), kind: DieKind::D6, faces };
         let mut shared = GeometryCache::default();
         let first = shared.get(key.clone(), &meshes).expect("geometry");
         let again = shared.get(key.clone(), &meshes).expect("same geometry");
@@ -338,9 +348,9 @@ mod tests {
     fn missing_entities_fail_without_waiting_for_assets() {
         let mut world = World::new();
         let mut key = CacheKey { arena: Entity::PLACEHOLDER, kinds: vec![DieKind::D6] };
-        assert!(matches!(snapshot(&world, &key, &mut GeometryCache::default()), Err(RollFailure::MissingArena)));
+        assert!(matches!(current_stamp(&world, &key), Err(RollFailure::MissingArena)));
         key.arena = world.spawn(DiceArena::default()).id();
-        assert!(matches!(snapshot(&world, &key, &mut GeometryCache::default()), Err(RollFailure::MissingDiceset)));
+        assert!(matches!(current_stamp(&world, &key), Err(RollFailure::MissingDiceset)));
     }
 
     #[test]

@@ -34,7 +34,7 @@ pub fn top_down_camera(height: f32) -> impl Bundle {
 /// layer or the dice won't appear.
 pub fn top_down_camera_on_layers(height: f32, extra_layers: &[u8]) -> impl Bundle {
     let mut layers = vec![0usize];
-    layers.extend(extra_layers.iter().map(|&n| n as usize));
+    layers.extend(extra_layers.iter().map(|&layer| layer as usize));
     (
         Camera3d::default(),
         Transform::from_xyz(0.0, height, 0.0).looking_at(Vec3::ZERO, Vec3::NEG_Z),
@@ -68,7 +68,7 @@ pub fn draw_arena_borders(mut gizmos: Gizmos, arenas: Query<&DiceArena>) {
 /// True when at least one key was pressed (not released) this frame. Use
 /// inside an `Update` system for "any key" triggers.
 pub fn any_key_pressed(events: &mut MessageReader<KeyboardInput>) -> bool {
-    events.read().any(|e| e.state.is_pressed())
+    events.read().any(|event| event.state.is_pressed())
 }
 
 /// Attach to a UI [`Text`] entity to turn it into a single-line input
@@ -103,7 +103,7 @@ pub fn drive_text_input(
     mut inputs: Query<(Entity, &TextInput, &mut Text)>,
     mut submitted: MessageWriter<TextInputSubmitted>,
 ) {
-    for event in events.read().filter(|e| e.state.is_pressed()) {
+    for event in events.read().filter(|event| event.state.is_pressed()) {
         for (entity, input, mut text) in inputs.iter_mut() {
             let current = text.0.strip_prefix(&input.prompt).unwrap_or("").to_string();
             match &event.logical_key {
