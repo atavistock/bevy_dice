@@ -1,6 +1,6 @@
 //! Isolated physics simulation and packed, interpolated throw recordings.
 
-use std::{f32::consts::TAU, fmt, time::Duration};
+use std::{cell::RefCell, f32::consts::TAU, fmt, time::Duration};
 
 use avian3d::prelude::*;
 use bevy::{
@@ -82,14 +82,31 @@ impl fmt::Display for SimulationError {
 
 impl std::error::Error for SimulationError {}
 
+/// Everything a headless app is built from; dice tuning is applied per die instead.
+#[derive(Clone, Copy, PartialEq)]
+struct AppKey {
+    center: Vec3,
+    size: Vec3,
+    gravity: Vec3,
+}
+
+thread_local! {
+    // Each thread keeps the app of its last settled throw for the next one.
+    static CACHED_APP: RefCell<Option<(AppKey, App)>> = const { RefCell::new(None) };
+}
+
 pub fn simulate_throw(input: SimulationInput) -> Result<RecordedThrow, SimulationError> {
     let radius = validate_input(&input)?;
-    for attempt in 0..MAX_ATTEMPTS {
-        if let Some(recording) = simulate_attempt(&input, radius, input.seed.wrapping_add(attempt)) {
-            return Ok(recording);
-        }
-    }
-    Err(SimulationError::DidNotSettle)
+    let key = AppKey { center: input.arena.center, size: input.arena.size, gravity: input.gravity };
+    let mut app = match CACHED_APP.take() {
+        Some((cached_key, app)) if cached_key == key => app,
+        _ => simulation_app(&input),
+    };
+    let recording = (0..MAX_ATTEMPTS)
+        .find_map(|attempt| simulate_attempt(&mut app, &input, radius, input.seed.wrapping_add(attempt)))
+        .ok_or(SimulationError::DidNotSettle)?;
+    CACHED_APP.set(Some((key, app)));
+    Ok(recording)
 }
 
 fn validate_input(input: &SimulationInput) -> Result<f32, SimulationError> {
@@ -145,6 +162,8 @@ fn simulation_app(input: &SimulationInput) -> App {
     app.add_message::<AssetEvent<Mesh>>();
     app.init_resource::<Assets<Mesh>>();
     app.insert_resource(Gravity(input.gravity));
+    // Async tree tasks would wait on the pool that may already be full of simulations.
+    app.insert_resource(ColliderTreeOptimization { use_async_tasks: false, ..default() });
     app.insert_resource(Time::<Fixed>::from_hz(PHYSICS_HZ as f64));
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / PHYSICS_HZ as f64)));
     let arena = &input.arena;
@@ -170,30 +189,46 @@ fn simulation_app(input: &SimulationInput) -> App {
     app
 }
 
-fn simulate_attempt(input: &SimulationInput, radius: f32, seed: u64) -> Option<RecordedThrow> {
-    let mut app = simulation_app(input);
+/// Throws the dice in `app` and clears them afterward so the app can host another attempt.
+fn simulate_attempt(app: &mut App, input: &SimulationInput, radius: f32, seed: u64) -> Option<RecordedThrow> {
     let mut random = StdRng::seed_from_u64(seed);
     let mut entities = Vec::with_capacity(input.kinds.len());
     let mut positions = Vec::new();
     let mut rotations = Vec::new();
     for (idx, position) in spawn_positions(input, radius).into_iter().enumerate() {
-        let (entity, rotation) = spawn_die(&mut app, input, idx, position, &mut random);
+        let (entity, rotation) = spawn_die(app, input, idx, position, &mut random);
         entities.push(entity);
         positions.push(position.to_array());
         rotations.push(rotation.to_array());
     }
+    let recording = record_until_settled(app, input, radius, &entities, &mut random, positions, rotations);
+    for entity in entities {
+        app.world_mut().despawn(entity);
+    }
+    recording
+}
+
+fn record_until_settled(
+    app: &mut App,
+    input: &SimulationInput,
+    radius: f32,
+    entities: &[Entity],
+    random: &mut StdRng,
+    mut positions: Vec<[f32; 3]>,
+    mut rotations: Vec<[f32; 4]>,
+) -> Option<RecordedThrow> {
     let mut quiet_steps = vec![0usize; input.kinds.len()];
     for step in 1..=MAX_STEPS {
         app.update();
         let record = step % STEPS_PER_FRAME == 0;
         let mut settled = true;
         for (idx, entity) in entities.iter().enumerate() {
-            let (position, rotation) = die_pose(&app, *entity, input.arena.center.y - radius)?;
+            let (position, rotation) = die_pose(app, *entity, input.arena.center.y - radius)?;
             if record {
                 positions.push(position.to_array());
                 rotations.push(rotation.to_array());
             }
-            if !is_resting(&app, *entity, &mut quiet_steps[idx])? {
+            if !is_resting(app, *entity, &mut quiet_steps[idx])? {
                 settled = false;
                 continue;
             }
@@ -203,7 +238,7 @@ fn simulate_attempt(input: &SimulationInput, radius: f32, seed: u64) -> Option<R
             if flatness(input, idx, rotation) < 0.985 {
                 settled = false;
                 quiet_steps[idx] = 0;
-                nudge(&mut app, *entity, &mut random);
+                nudge(app, *entity, random);
             }
         }
         // Keep the final pose on the fixed recording grid.
@@ -336,10 +371,18 @@ mod tests {
     use super::*;
 
     fn cube_input() -> SimulationInput {
-        SimulationInput { arena: SimulationArena::default(), kinds: vec![DieKind::D6],
+        SimulationInput {
+            arena: SimulationArena::default(),
+            kinds: vec![DieKind::D6],
             colliders: vec![Collider::cuboid(1.0, 1.0, 1.0)],
-            orientations: load_orientations_from_bytes(br#"{"extras":{"dice_orientations":{"d6":{"1":[0,1,0],"2":[1,0,0],"3":[0,0,1],"4":[0,0,-1],"5":[-1,0,0],"6":[0,-1,0]}}}}"#),
-            gravity: Vec3::new(0.0, -23.1, 0.0), seed: 1234 }
+            orientations: load_orientations_from_bytes(
+                br#"{"extras":{"dice_orientations":{"d6":{
+                "1":[0,1,0],"2":[1,0,0],"3":[0,0,1],"4":[0,0,-1],"5":[-1,0,0],"6":[0,-1,0]
+            }}}}"#,
+            ),
+            gravity: Vec3::new(0.0, -23.1, 0.0),
+            seed: 1234,
+        }
     }
 
     #[test]
@@ -385,6 +428,62 @@ mod tests {
         assert_eq!(recording.frame_count(), 2);
         assert_eq!(recording.pose(0, 1.0 / 64.0).expect("first body").0.x, 1.0);
         assert_eq!(recording.pose(1, 1.0 / 64.0).expect("second body").0.x, 12.0);
+    }
+
+    #[test]
+    fn reused_app_repeats_the_same_throw() {
+        let input = cube_input();
+        let radius = validate_input(&input).expect("valid input");
+        let mut app = simulation_app(&input);
+        let first = simulate_attempt(&mut app, &input, radius, input.seed).expect("first attempt settles");
+        let second = simulate_attempt(&mut app, &input, radius, input.seed).expect("second attempt settles");
+        assert_eq!(first.positions, second.positions);
+        assert_eq!(first.rotations, second.rotations);
+    }
+
+    #[test]
+    fn simulations_filling_the_async_pool_complete() {
+        use bevy::tasks::{AsyncComputeTaskPool, TaskPool, futures::check_ready};
+        use std::time::Instant;
+        let pool = AsyncComputeTaskPool::get_or_init(TaskPool::default);
+        let mut tasks: Vec<_> =
+            (0..pool.thread_num()).map(|_| pool.spawn(async { simulate_throw(cube_input()).is_ok() })).collect();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while let Some(task) = tasks.last_mut() {
+            match check_ready(task) {
+                Some(settled) => {
+                    assert!(settled);
+                    tasks.pop();
+                }
+                None => {
+                    assert!(Instant::now() < deadline, "simulations starved the pool");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+
+    fn cached_size() -> Option<Vec3> {
+        CACHED_APP.with_borrow(|cached| cached.as_ref().map(|(key, _)| key.size))
+    }
+
+    #[test]
+    fn cached_app_matches_a_fresh_one_and_rebuilds_for_a_new_arena() {
+        assert!(cached_size().is_none());
+        let fresh = simulate_throw(cube_input()).expect("fresh app settles");
+        assert_eq!(cached_size(), Some(cube_input().arena.size));
+        let mut crowded = cube_input();
+        crowded.kinds = vec![DieKind::D6; 8];
+        crowded.colliders = vec![Collider::cuboid(1.0, 1.0, 1.0); 8];
+        simulate_throw(crowded).expect("crowded throw settles");
+        let reused = simulate_throw(cube_input()).expect("cached app settles");
+        assert_eq!(fresh.positions, reused.positions);
+        assert_eq!(fresh.rotations, reused.rotations);
+        let mut resized = cube_input();
+        resized.arena.size.x += 2.0;
+        let size = resized.arena.size;
+        simulate_throw(resized).expect("resized arena settles");
+        assert_eq!(cached_size(), Some(size));
     }
 
     #[test]
