@@ -1,12 +1,11 @@
 # bevy_dice
 
-Physics-driven dice for Bevy 0.19. Parse a dice expression, drop it into an arena, watch the dice tumble and settle, read the result.
+Physics-driven dice for Bevy 0.19. Parse a dice expression, roll it in an arena, watch the dice tumble and settle, read the result.
 
-The public modules are `dice` for expression math, `sim` for headless physics and recordings, and `render` for assets, roll queues, and playback. Simulation has no dependency on the rendering module.
-
-- Math-only roll API for headless use (`DiceRoll::parse`, `roll`, `roll_detailed`) with no Bevy dependency on the caller's side beyond the crate import.
-- Background physics built on `avian3d`: isolated arena colliders, settling detection, and packed trajectories for interpolated playback. The host world needs no physics plugin.
-- Standard polyhedral set: d4, d6, d8, d10, d12, d20, d100 (rendered as a d100 tens + d10 ones pair).
+- `dice`: expression parsing and roll math, usable headless.
+- `sim`: background physics on `avian3d`, recorded as packed trajectories. The host world needs no physics plugin.
+- `render`: dicesets, arenas, roll queues, and playback.
+- Standard polyhedral set: d4, d6, d8, d10, d12, d20, d100 (a tens die plus a d10).
 
 ## Add to your project
 
@@ -16,48 +15,44 @@ bevy = "0.19"
 bevy_dice = { version = "0.4", features = ["plain_white"] }
 ```
 
-The diceset features ship a `.glb` baked into the binary so you do not have to manage assets yourself:
+Each diceset feature bakes a `.glb` into the binary:
 
 - `plain_white` - white plastic, black labels
 - `halloween` - orange and black
 - `metal` - brushed metal
 - `clear_orange` - translucent orange
 
-Two larger textured sets (`frosty`, `fiery`) are not feature-gated; copy them out of this repo's `assets/` directory and load them through the asset server like any other gltf.
-
-I also have a process to generate custom dice, feel free to contact me with a request.
-
-## Components and how they connect
-
-- **`Diceset`** - a gltf asset path plus its face-orientation table. Cached mesh + material handles populate automatically once the asset loads. Spawn one per distinct diceset; many arenas can share one.
-- **`DiceArena`** - a playing-area box. Holds an `Entity` reference to its `Diceset` (use `.diceset(entity)`).
-- **`DefaultArena`** - marker component. Tag exactly one arena to make it the target of `roller.roll(...)` / `roller.roll_expr("...")`.
-- **`SpawnedDie`** - marker on every die entity, plus the arena it belongs to.
+Two larger textured sets (`frosty`, `fiery`) are not feature-gated; copy them from this repo's `assets/` directory and load them as a custom diceset. I can also generate custom dice on request.
 
 ## Quick start
 
-- Add `DicePlugin::default()` to your `App` (after `DefaultPlugins`).
-- Enable one diceset feature so a default arena (and its `Diceset` entity) auto-spawn at startup. Or spawn them yourself (see "Custom arena").
-- Trigger rolls with `roller.roll_expr("3d6+2")` (a `DiceRoller` system param); read results from `MessageReader<RollComplete>`.
+- Add `DicePlugin::default()` after `DefaultPlugins`.
+- Enable one diceset feature and a default arena spawns at startup, or spawn your own (see "Custom arenas").
+- Roll with the `DiceRoller` system param, such as `roller.roll_expr("3d6+2")`, and read `MessageReader<RollComplete>`.
 
-No camera setup is required out of the box - dice render on layer `0`, the same layer as everything else in your scene.
+Dice render on layer `0` with the rest of your scene, so no camera setup is needed.
 
-See [`examples/simple_d20.rs`](examples/simple_d20.rs), use` cargo run --example simple_d20 --features plain_white` to run it.
+Examples run with `cargo run --example <name> --features plain_white`: [`simple_d20`](examples/simple_d20.rs), [`dice_expressions`](examples/dice_expressions.rs), [`two_arenas`](examples/two_arenas.rs), [`isolated_layer`](examples/isolated_layer.rs).
+
+## Components
+
+- `Diceset`: a gltf asset path plus its face-orientation table. Spawn one per distinct diceset; arenas can share it.
+- `DiceArena`: a playing-area box that references its `Diceset` entity.
+- `DefaultArena`: marker for the arena targeted by `roller.roll(...)` and `roller.roll_expr(...)`. Tag at most one.
+- `SpawnedDie`: marker on every die entity, with its kind and arena.
 
 ## Dice expressions
 
 - `3d6`: three six-sided dice.
 - `d20+5`: one d20 plus five.
-- `2d6+1d4-1`: compound expression with adjustment.
+- `2d6+1d4-1`: compound expression with an adjustment.
 - `1d20-1d4`: negated term.
 - `2d20kh1+5`: keep the highest die, then add five.
 - `4d6kl3r1e6`: reroll ones, explode sixes, then keep the lowest three.
 
-Whitespace is ignored, `d` and `D` both work. Supported sides: 4, 6, 8, 10, 12, 20, 100. See [`DiceRoll::parse`] for the full grammar. A leading `+` or `-` is rejected; write `3d6`, not `+3d6`.
+Whitespace is ignored and `d`/`D` both work. Sides: 4, 6, 8, 10, 12, 20, 100. Modifiers `khN`, `klN`, `rN`, and `eN` are case-insensitive and combine in any order.
 
-Expressions must contain a dice term; constants such as `5` or `2+3` return `ParseError::NoDice`. Integer adjustments must remain between -2147483647 and 2147483647 inclusive; larger magnitudes return `ParseError::Overflow`. Modifiers `khN`, `klN`, `rN`, and `eN` are case-insensitive and may be combined in any order. Duplicate modifiers, missing arguments, and invalid settings are parse errors.
-
-See [`dice_expressions`](examples/dice_expressions.rs), use `cargo run --example dice_expressions --features plain_white` to run it.
+Parse errors: a leading `+` or `-`, no dice term (`ParseError::NoDice`), an adjustment outside +/-2147483647 (`ParseError::Overflow`), and duplicate, incomplete, or invalid modifiers.
 
 ## Reading results
 
@@ -79,7 +74,37 @@ fn report(mut completed: MessageReader<RollComplete>) {
 }
 ```
 
-Theres an example of this in [`dice_expressions`](examples/dice_expressions.rs), use `cargo run --example dice_expressions --features plain_white` to run it.
+`RollFailed` reports rolls that cannot complete: invalid input, unavailable assets, or interrupted playback.
+
+## Forcing a result
+
+Decide the faces yourself (a server roll, a replay, a scripted moment) and the dice land on them. The throw is still a recorded physics trajectory; each die is pre-rotated by a symmetry of its mesh so the requested face settles on top.
+
+```rust
+use bevy_dice::dice::{DiceRoll, DieKind, RollOutcome, RolledDie};
+use bevy_dice::render::DiceRoller;
+
+fn cast(mut roller: DiceRoller) {
+    let roll = DiceRoll::parse("2d6+3").unwrap();
+    let outcome = RollOutcome {
+        total: 14,
+        dice: vec![
+            RolledDie { kind: DieKind::D6, value: 6, negate: false },
+            RolledDie { kind: DieKind::D6, value: 5, negate: false },
+        ],
+        // Dice per term, in expression order.
+        term_lengths: vec![2],
+    };
+    let _roll_id = roller.roll_with_outcome(&roll, outcome).unwrap();
+}
+```
+
+- `roll_with_outcome` targets the `DefaultArena`; `roll_in_with_outcome(arena, &roll, outcome)` targets a specific one.
+- An outcome that does not fit the expression returns an `OutcomeError` and consumes no roll id. Checked: term count, dice per term, die kind, face range, sign, total, and the 20 physical dice limit.
+- List only dice that count toward the total: the kept dice for `khN`/`klN`, plus any exploded extras for `eN`. `roll.roll_detailed(&mut rng)` builds a valid outcome from your own generator.
+- A d100 value is `1..=100`; `100` lands as `00` and `0`. A d10 value of `10` lands on `0`.
+
+Generated rolls play the same way, so every diceset needs numeric face labels in `extras.dice_orientations` and rotationally symmetric meshes. The embedded dicesets qualify; otherwise rolls fail with `RollFailure::InvalidGeometry`.
 
 ## Custom arenas
 
@@ -99,31 +124,27 @@ fn setup(mut commands: Commands) {
 }
 ```
 
-`Diceset::embedded(slug)` resolves an enabled embedded feature's gltf bytes. For a custom diceset shipped in your `assets/` directory, use `Diceset::custom("my_diceset")` (it appends `.glb`/`.gltf` and reads orientations from `assets/{slug}`). If orientations live elsewhere, use `Diceset::custom_with(path, orientations)`.
+- `Diceset::embedded(slug)` loads an enabled diceset feature.
+- `Diceset::custom("my_diceset")` loads `assets/my_diceset.glb` and reads its orientations; use `Diceset::custom_with(path, orientations)` when they live elsewhere.
+- Spawn several `DiceArena` entities for separate rolling regions; they can share one `Diceset`. Target one with `roller.roll_in(arena, roll)`.
+- `DicePlugin::gravity` sets simulation gravity without touching host physics; change `DiceSimulationGravity.acceleration` at runtime. Arena floor and walls exist only in the background simulation.
 
-Spawn multiple `DiceArena` entities to run separate rolling regions in the same world. They can share a single `Diceset` (one mesh load, one orientation table, one spawn). Tag at most one with `DefaultArena`; use `DiceRoller::roll_in(arena_entity, roll)` to target a specific one.
+## How playback works
 
-`DiceRoller` plays precomputed throws from a two-entry queue per arena and canonical physical dice composition. Adjustments and term order share recordings; modifiers animate their final contributing dice. Empty queues wait for background refill, and rolls in the same arena play in submission order. Physics runs at 64 Hz; separate packed position and rotation arrays record at 32 Hz and interpolate during playback. Three seconds of poses occupy 2,716 bytes per physical die, excluding queue metadata and shared geometry. Native builds refill one throw at a time on Bevy's background task pool; browser worker support is not implemented. Crowded arenas can require repeated attempts; use sufficient floor space for large throws, such as a 12 by 10 arena for 20 d20s.
+Rolls play precomputed throws, so results appear without a physics step in your world.
 
-Use `roller.precompute_in(arena, &roll)` to warm the base composition after keep modifiers before the first throw, or `roller.roll_in_with_outcome(arena, &roll, outcome)` to supply server results. A geometry-preserving local rotation selects the requested faces before playback begins. `RollComplete` reports completion; `RollFailed` reports invalid inputs, unavailable assets, or interrupted playback. An empty queue or an unsuccessful settling attempt keeps the request pending. Failed simulations retry after 250 ms, doubling the delay up to 8 seconds; success or changed simulation inputs reset the delay. Empty queues with waiting requests take priority over background top-ups. Arena physics or asset changes invalidate recordings. Warming and `PrecomputeCache::ready_count` both refer to that base composition; additional exploding dice create composition queues on demand. Direct `RollRequest` messages use the same queue; set `outcome: None` for generated results or `Some(outcome)` for supplied faces.
-
-Mesh vertices, prepared colliders, and face symmetries are shared across compositions and arenas using the same mesh and face metadata. Preparation runs once in the background per shared geometry. Mesh changes invalidate the shared entry; unused geometry is released when its last template or job drops.
-
-`DicePlugin::gravity` configures background simulation gravity without reading or changing host physics. Set `DiceSimulationGravity.acceleration` to update it at runtime. Rendered dice carry transforms and meshes; arena floor and wall colliders exist only in the background simulation.
-
-Set `BEVY_DICE_SMOKE_SCREENSHOT=/tmp/dice.png` when running an example to submit its demonstration roll, verify completion, capture the rendered result, and exit. The expression example submits `3d6+2`; both arenas must complete in `two_arenas`.
+- Each arena keeps a queue of two ready throws per physical dice composition. Adjustments and term order share a queue.
+- Queues refill concurrently on Bevy's async compute task pool, and waiting rolls take priority over top-ups. Browser worker support is not implemented.
+- A roll on an empty queue waits for its refill; rolls in one arena play in submission order.
+- `roller.precompute_in(arena, &roll)` warms a queue before the first throw, and `PrecomputeCache::ready_count(arena, &roll)` reports it. Both use the dice left after keep modifiers; exploded extras create their own queues on demand.
+- A throw that does not settle retries after 250 ms, doubling up to 8 seconds. Crowded arenas settle less often, so give large throws floor space, such as 12 by 10 for 20 d20s.
+- Changing an arena's geometry, physics, gravity, or meshes discards its recordings and fails any playback in progress.
+- Physics runs at 64 Hz and records at 32 Hz, about 0.9 KB per die per second; playback interpolates.
+- `RollRequest` messages use the same queue: `outcome: None` generates a result, `Some(outcome)` forces one.
 
 ## Render layers
 
-By default, every dice entity and its overhead light spawn on render layer `0`, so any camera that renders your scene sees them with no extra setup.
-
-You can override the layer per arena (or globally on the plugin) to isolate the dice from the rest of your scene. This is useful when:
-
-- Your game already has its own lights on layer 0 that double-light the dice.
-- You want a HUD-style camera that only renders dice.
-- Split-screen: each player's arena draws on a different layer.
-
-To isolate, pick a non-zero layer, set it on the arena, and make sure your camera includes both the scene layer and the dice layer:
+Dice and their overhead light spawn on render layer `0` by default. Move them to another layer to avoid double lighting from your scene, to draw dice with a HUD camera, or to split arenas across split-screen views. Set the layer on the arena and include it on your camera:
 
 ```rust
 use bevy::camera::visibility::RenderLayers;
@@ -152,9 +173,7 @@ App::new()
     });
 ```
 
-`DicePlugin::render_layer` sets the default for arenas that don't override it. `DiceArena::render_layer(N)` overrides per arena. The plugin spawns one overhead `DirectionalLight` per arena, on the arena's resolved layer.
-
-See [`examples/isolated_layer.rs`](examples/isolated_layer.rs), use `cargo run --example isolated_layer --features plain_white` to run it.
+`DicePlugin::render_layer` sets the default and `DiceArena::render_layer(N)` overrides it per arena. Each arena gets one overhead `DirectionalLight` on its layer.
 
 ## Roll options
 
@@ -165,26 +184,25 @@ let roll = DiceRoll::parse("4d6").unwrap()
     .with_options(Options::default().with_keep_highest(3));
 ```
 
-- `keep_highest(n)` / `keep_lowest(n)` - drop dice after rolling.
-- `reroll_at_or_below(threshold)` - replace low rolls until above the threshold (capped by `MAX_OPTION_ITERATIONS` per term).
-- `explode_at_or_above(threshold)` - rolls hitting the threshold spawn an extra die (same cap).
+- `keep_highest(n)` / `keep_lowest(n)`: drop dice after rolling.
+- `reroll_at_or_below(threshold)`: replace low rolls, capped by `MAX_OPTION_ITERATIONS` per term.
+- `explode_at_or_above(threshold)`: rolls at the threshold add an extra die (same cap).
 
-`DiceRoll::with_explode()` and `with_reroll_ones()` are shorthands. `DiceRoll::advantage(modifier)` / `disadvantage(modifier)` build a standard 5e `2d20kh1` / `2d20kl1` roll plus the modifier.
-
-Modifiers are resolved before playback using the headless math API. The resulting contributing dice share the same cached presentation pipeline as supplied outcomes.
+Shorthands: `DiceRoll::with_explode()`, `with_reroll_ones()`, and `DiceRoll::advantage(modifier)` / `disadvantage(modifier)` for 5e `2d20kh1` / `2d20kl1`. Modifiers resolve before playback, so only the contributing dice are thrown.
 
 ## Determinism
 
-Gameplay outcomes use `DiceRng` (a boxed `RngCore`), while background simulation seeds use the independent `DiceSimulationRng`. Both default to entropy-seeded generators. Warming and refill scheduling do not advance the gameplay stream. Seed `DiceSimulationRng::from_seed` separately when repeatable simulation seeds are needed:
+Gameplay outcomes draw from `DiceRng` (any boxed `RngCore`); simulation seeds draw from the independent `DiceSimulationRng`, so warming and refills never advance the gameplay stream. Both default to entropy. Seed either one for repeatable results:
 
 ```rust
-use bevy_dice::render::DiceRng;
+use bevy_dice::render::{DiceRng, DiceSimulationRng};
 app.insert_resource(DiceRng::from_seed(0xD1CE));
+app.insert_resource(DiceSimulationRng::from_seed(0xD1CE));
 ```
 
 ## Headless math
 
-If you only need the numbers, skip `DicePlugin` entirely:
+If you only need the numbers, skip `DicePlugin`:
 
 ```rust
 use bevy_dice::dice::DiceRoll;
@@ -192,12 +210,16 @@ use bevy_dice::dice::DiceRoll;
 let total = DiceRoll::parse("3d6+2").unwrap().roll(&mut rand::thread_rng());
 ```
 
-`roll_detailed` additionally returns each individual die value.
+`roll_detailed` also returns each die value.
+
+## Testing
+
+Set `BEVY_DICE_SMOKE_SCREENSHOT=/tmp/dice.png` when running an example to submit its demonstration roll, verify completion, save a screenshot, and exit.
 
 ## Inspector support
 
-All public components and messages derive `Reflect` and are registered with the type registry, so they show up in `bevy-inspector-egui` and similar tools.
+Components, `RollRequest`, and `RollComplete` derive `Reflect` and are registered, so they show up in `bevy-inspector-egui` and similar tools.
 
 ## License
 
-Everything here is available under an MIT license. See [`LICENSE.txt`](LICENSE.txt).
+MIT. See [`LICENSE.txt`](LICENSE.txt).
