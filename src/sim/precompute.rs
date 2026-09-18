@@ -13,9 +13,10 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use super::{DiceOrientations, MAX_DICE_PER_ROLL, SimulationArena};
 use crate::dice::DieKind;
 
-const PHYSICS_HZ: f64 = 64.0;
-const RECORDING_HZ: f32 = 32.0;
-const MAX_STEPS: usize = 15 * 64;
+const PHYSICS_HZ: usize = 64;
+const STEPS_PER_FRAME: usize = 2;
+const RECORDING_HZ: f32 = (PHYSICS_HZ / STEPS_PER_FRAME) as f32;
+const MAX_STEPS: usize = 15 * PHYSICS_HZ;
 const MAX_ATTEMPTS: u64 = 3;
 
 pub struct SimulationInput {
@@ -144,8 +145,8 @@ fn simulation_app(input: &SimulationInput) -> App {
     app.add_message::<AssetEvent<Mesh>>();
     app.init_resource::<Assets<Mesh>>();
     app.insert_resource(Gravity(input.gravity));
-    app.insert_resource(Time::<Fixed>::from_hz(PHYSICS_HZ));
-    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / PHYSICS_HZ)));
+    app.insert_resource(Time::<Fixed>::from_hz(PHYSICS_HZ as f64));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / PHYSICS_HZ as f64)));
     let arena = &input.arena;
     let half = arena.size * 0.5;
     let mut walls = vec![(Vec3::new(0.0, -0.25, 0.0), Vec3::new(arena.size.x, 0.5, arena.size.z))];
@@ -172,104 +173,41 @@ fn simulation_app(input: &SimulationInput) -> App {
 fn simulate_attempt(input: &SimulationInput, radius: f32, seed: u64) -> Option<RecordedThrow> {
     let mut app = simulation_app(input);
     let mut random = StdRng::seed_from_u64(seed);
-    let arena = &input.arena;
-    let spacing = radius * 2.001;
-    let columns = ((arena.size.x / spacing).floor() as usize).min(input.kinds.len());
-    let rows = ((arena.size.z / spacing).floor() as usize).min(input.kinds.len().div_ceil(columns));
     let mut entities = Vec::with_capacity(input.kinds.len());
     let mut positions = Vec::new();
     let mut rotations = Vec::new();
-    let mut quiet_steps = vec![0usize; input.kinds.len()];
-    for (idx, collider) in input.colliders.iter().enumerate() {
-        let col = idx % columns;
-        let row = (idx / columns) % rows;
-        let layer = idx / (columns * rows);
-        let position = arena.center
-            + Vec3::new(
-                (col as f32 - (columns - 1) as f32 * 0.5) * spacing,
-                arena.size.y - radius + layer as f32 * spacing,
-                (row as f32 - (rows - 1) as f32 * 0.5) * spacing,
-            );
-        let rotation = Quat::from_euler(
-            EulerRot::XYZ,
-            random.gen_range(0.0..TAU),
-            random.gen_range(0.0..TAU),
-            random.gen_range(0.0..TAU),
-        );
-        let inward = (arena.center - position).with_y(0.0).normalize_or_zero();
-        let speed =
-            arena.spawn.speed * (arena.spawn.speed_min_factor + random.gen_range(0.0..1.0) * arena.spawn.speed_jitter);
-        let velocity = inward * speed * (0.15 / (input.kinds.len() as f32).sqrt())
-            + Vec3::NEG_Y * arena.spawn.speed * arena.spawn.vertical_velocity_fraction;
-        let angular = random_unit(&mut random) * arena.spawn.speed * arena.spawn.angular_speed_factor;
-        entities.push(
-            app.world_mut()
-                .spawn((
-                    RigidBody::Dynamic,
-                    collider.clone(),
-                    SweptCcd::default(),
-                    Transform::from_translation(position).with_rotation(rotation),
-                    LinearVelocity(velocity),
-                    AngularVelocity(angular),
-                    Restitution::new(arena.physics.restitution),
-                    Friction::new(arena.physics.friction),
-                    AngularDamping(arena.physics.angular_damping),
-                    LinearDamping(arena.physics.linear_damping),
-                ))
-                .id(),
-        );
+    for (idx, position) in spawn_positions(input, radius).into_iter().enumerate() {
+        let (entity, rotation) = spawn_die(&mut app, input, idx, position, &mut random);
+        entities.push(entity);
         positions.push(position.to_array());
         rotations.push(rotation.to_array());
     }
+    let mut quiet_steps = vec![0usize; input.kinds.len()];
     for step in 1..=MAX_STEPS {
         app.update();
+        let record = step % STEPS_PER_FRAME == 0;
         let mut settled = true;
         for (idx, entity) in entities.iter().enumerate() {
-            let body = app.world().entity(*entity);
-            let position = body.get::<Position>()?.0;
-            let rotation = body.get::<Rotation>()?.0;
-            if !position.is_finite() || !rotation.is_finite() || position.y < arena.center.y - radius {
-                return None;
-            }
-            if step % 2 == 0 {
+            let (position, rotation) = die_pose(&app, *entity, input.arena.center.y - radius)?;
+            if record {
                 positions.push(position.to_array());
                 rotations.push(rotation.to_array());
             }
-            let quiet = body.get::<LinearVelocity>()?.0.length_squared() < 0.0025
-                && body.get::<AngularVelocity>()?.0.length_squared() < 0.01;
-            quiet_steps[idx] = if quiet { quiet_steps[idx] + 1 } else { 0 };
-            if !body.contains::<Sleeping>() && quiet_steps[idx] < 32 {
+            if !is_resting(&app, *entity, &mut quiet_steps[idx])? {
                 settled = false;
                 continue;
             }
-            let bounds = input.colliders[idx].aabb(position, rotation);
-            let half = arena.size * 0.5;
-            if bounds.min.x < arena.center.x - half.x - 0.05
-                || bounds.max.x > arena.center.x + half.x + 0.05
-                || bounds.min.z < arena.center.z - half.z - 0.05
-                || bounds.max.z > arena.center.z + half.z + 0.05
-                || bounds.min.y < arena.center.y - 0.05
-                || bounds.max.y > arena.center.y + arena.size.y
-            {
+            if !inside_arena(&input.arena, input.colliders[idx].aabb(position, rotation)) {
                 return None;
             }
-            let flatness = input
-                .orientations
-                .faces(input.kinds[idx])
-                .iter()
-                .map(|(_, direction)| (rotation * *direction).y)
-                .fold(f32::NEG_INFINITY, f32::max);
-            if flatness < 0.985 {
+            if flatness(input, idx, rotation) < 0.985 {
                 settled = false;
                 quiet_steps[idx] = 0;
-                app.world_mut().entity_mut(*entity).remove::<Sleeping>().insert((
-                    AngularVelocity(random_unit(&mut random) * 2.0),
-                    LinearVelocity(Vec3::Y * 2.0 + random_unit(&mut random).with_y(0.0)),
-                ));
+                nudge(&mut app, *entity, &mut random);
             }
         }
         // Keep the final pose on the fixed recording grid.
-        if settled && step % 2 == 0 {
+        if settled && record {
             return Some(RecordedThrow {
                 kinds: input.kinds.clone(),
                 positions: positions.into_boxed_slice(),
@@ -278,6 +216,111 @@ fn simulate_attempt(input: &SimulationInput, radius: f32, seed: u64) -> Option<R
         }
     }
     None
+}
+
+/// Grid of start positions under the ceiling; overflow stacks in layers above it.
+fn spawn_positions(input: &SimulationInput, radius: f32) -> Vec<Vec3> {
+    let arena = &input.arena;
+    let spacing = radius * 2.001;
+    let columns = ((arena.size.x / spacing).floor() as usize).min(input.kinds.len());
+    let rows = ((arena.size.z / spacing).floor() as usize).min(input.kinds.len().div_ceil(columns));
+    (0..input.kinds.len())
+        .map(|idx| {
+            let col = idx % columns;
+            let row = (idx / columns) % rows;
+            let layer = idx / (columns * rows);
+            arena.center
+                + Vec3::new(
+                    (col as f32 - (columns - 1) as f32 * 0.5) * spacing,
+                    arena.size.y - radius + layer as f32 * spacing,
+                    (row as f32 - (rows - 1) as f32 * 0.5) * spacing,
+                )
+        })
+        .collect()
+}
+
+/// Spawns die `idx` with a random rotation, inward throw, and spin.
+fn spawn_die(
+    app: &mut App,
+    input: &SimulationInput,
+    idx: usize,
+    position: Vec3,
+    random: &mut StdRng,
+) -> (Entity, Quat) {
+    let arena = &input.arena;
+    let rotation = Quat::from_euler(
+        EulerRot::XYZ,
+        random.gen_range(0.0..TAU),
+        random.gen_range(0.0..TAU),
+        random.gen_range(0.0..TAU),
+    );
+    let inward = (arena.center - position).with_y(0.0).normalize_or_zero();
+    let speed =
+        arena.spawn.speed * (arena.spawn.speed_min_factor + random.gen_range(0.0..1.0) * arena.spawn.speed_jitter);
+    let velocity = inward * speed * (0.15 / (input.kinds.len() as f32).sqrt())
+        + Vec3::NEG_Y * arena.spawn.speed * arena.spawn.vertical_velocity_fraction;
+    let angular = random_unit(random) * arena.spawn.speed * arena.spawn.angular_speed_factor;
+    let entity = app
+        .world_mut()
+        .spawn((
+            RigidBody::Dynamic,
+            input.colliders[idx].clone(),
+            SweptCcd::default(),
+            Transform::from_translation(position).with_rotation(rotation),
+            LinearVelocity(velocity),
+            AngularVelocity(angular),
+            Restitution::new(arena.physics.restitution),
+            Friction::new(arena.physics.friction),
+            AngularDamping(arena.physics.angular_damping),
+            LinearDamping(arena.physics.linear_damping),
+        ))
+        .id();
+    (entity, rotation)
+}
+
+/// Current pose, or `None` once it is non-finite or below `lowest_y`.
+fn die_pose(app: &App, entity: Entity, lowest_y: f32) -> Option<(Vec3, Quat)> {
+    let body = app.world().entity(entity);
+    let position = body.get::<Position>()?.0;
+    let rotation = body.get::<Rotation>()?.0;
+    (position.is_finite() && rotation.is_finite() && position.y >= lowest_y).then_some((position, rotation))
+}
+
+/// Updates the quiet-step counter; true once the die sleeps or stays quiet for 32 steps.
+fn is_resting(app: &App, entity: Entity, quiet_steps: &mut usize) -> Option<bool> {
+    let body = app.world().entity(entity);
+    let quiet = body.get::<LinearVelocity>()?.0.length_squared() < 0.0025
+        && body.get::<AngularVelocity>()?.0.length_squared() < 0.01;
+    *quiet_steps = if quiet { *quiet_steps + 1 } else { 0 };
+    Some(body.contains::<Sleeping>() || *quiet_steps >= 32)
+}
+
+fn inside_arena(arena: &SimulationArena, bounds: ColliderAabb) -> bool {
+    let half = arena.size * 0.5;
+    bounds.min.x >= arena.center.x - half.x - 0.05
+        && bounds.max.x <= arena.center.x + half.x + 0.05
+        && bounds.min.z >= arena.center.z - half.z - 0.05
+        && bounds.max.z <= arena.center.z + half.z + 0.05
+        && bounds.min.y >= arena.center.y - 0.05
+        && bounds.max.y <= arena.center.y + arena.size.y
+}
+
+/// Largest upward component among the faces of die `idx`; 1.0 is perfectly flat.
+fn flatness(input: &SimulationInput, idx: usize, rotation: Quat) -> f32 {
+    input
+        .orientations
+        .faces(input.kinds[idx])
+        .iter()
+        .map(|(_, direction)| (rotation * *direction).y)
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// Wakes a die resting off-face with a small hop and spin.
+fn nudge(app: &mut App, entity: Entity, random: &mut StdRng) {
+    app.world_mut().entity_mut(entity).remove::<Sleeping>().insert((
+        AngularVelocity(random_unit(random) * 2.0),
+        LinearVelocity(Vec3::Y * 2.0 + random_unit(random).with_y(0.0)),
+    ));
 }
 
 fn random_unit(random: &mut StdRng) -> Vec3 {
