@@ -222,4 +222,4 @@ Components, `RollRequest`, and `RollComplete` derive `Reflect` and are registere
 
 ## License
 
-MIT. See [`LICENSE.txt`](LICENSE.txt).
+BSD-2-Clause-Patent. See [`LICENSE.txt`](LICENSE.txt).
